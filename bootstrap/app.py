@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -20,18 +21,71 @@ from core.net.http import (
     configure_default_shared_http_resources,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-    datefmt="%H:%M:%S",
-    stream=sys.stdout,
-    force=True,
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
-logging.getLogger("apscheduler").setLevel(logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
+def _setup_logging() -> None:
+    """配置日志：控制台 + 文件分流 + 错误日志"""
+    # 确保 logs 目录存在
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
 
+    # 通用格式化器
+    console_fmt = "%(asctime)s  %(levelname)-8s  [%(name)s]  %(message)s"
+    file_fmt = "%(asctime)s  %(levelname)-8s  [%(name)s]  %(message)s"
+
+    # 控制台 Handler（INFO 及以上）
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(console_fmt, datefmt="%H:%M:%S"))
+
+    # 模块日志文件映射
+    module_files = {
+        "qqbot": "logs/qqbot_channel.log",
+        "telegram": "logs/telegram_channel.log",
+        "qq": "logs/qq_channel.log",
+        "bus": "logs/bus.log",
+        "agent": "logs/agent.log",
+        "proactive": "logs/proactive.log",
+    }
+
+    # 创建各模块 FileHandler
+    module_handlers: dict[str, logging.FileHandler] = {}
+    for module, filepath in module_files.items():
+        handler = logging.FileHandler(filepath, encoding="utf-8")
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter(file_fmt, datefmt="%H:%M:%S"))
+        module_handlers[module] = handler
+
+    # 统一错误日志 Handler（ERROR 及以上）
+    error_handler = logging.FileHandler("logs/error.log", encoding="utf-8")
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(logging.Formatter(file_fmt, datefmt="%H:%M:%S"))
+    error_handler.addFilter(lambda record: record.levelno >= logging.ERROR)
+
+    # 为每个模块配置专属日志文件
+    for module, handler in module_handlers.items():
+        module_logger = logging.getLogger(module)
+        module_logger.setLevel(logging.DEBUG)
+        module_logger.handlers.clear()
+        module_logger.addHandler(console_handler)
+        module_logger.addHandler(handler)
+        module_logger.addHandler(error_handler)
+
+    # 全局根 logger 配置
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.handlers.clear()
+    root.addHandler(console_handler)
+    root.addHandler(error_handler)
+
+    # 抑制第三方库噪音
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+    logging.getLogger("websockets").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+_setup_logging()
 logger = logging.getLogger(__name__)
 
 

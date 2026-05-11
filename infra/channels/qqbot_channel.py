@@ -133,6 +133,7 @@ class QQBotChannel:
                 raw_data = payload.get("d")
                 data = cast(dict[str, Any], raw_data) if isinstance(raw_data, dict) else {}
                 event_type = payload.get("t")
+                
                 if isinstance(payload.get("s"), int):
                     last_seq = int(payload["s"])
 
