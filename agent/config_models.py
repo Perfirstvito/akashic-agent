@@ -36,6 +36,13 @@ class QQBotGroupConfig:
 
 
 @dataclass
+class FeishuChannelConfig:
+    app_id: str
+    app_secret: str
+    allow_from: list[str] = field(default_factory=list)
+
+
+@dataclass
 class QQBotChannelConfig:
     app_id: str
     client_secret: str
@@ -48,6 +55,7 @@ class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
     qq: QQChannelConfig | None = None
     qqbot: QQBotChannelConfig | None = None
+    feishu: FeishuChannelConfig | None = None
     socket: str = "/tmp/akashic.sock"
 
 
@@ -139,6 +147,7 @@ class Config:
 __all__ = [
     "ChannelsConfig",
     "Config",
+    "FeishuChannelConfig",
     "FitbitIntegrationConfig",
     "MemoryConfig",
     "MemoryEmbeddingConfig",

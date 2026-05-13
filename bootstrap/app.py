@@ -41,6 +41,7 @@ def _setup_logging() -> None:
         "qqbot": "logs/qqbot_channel.log",
         "telegram": "logs/telegram_channel.log",
         "qq": "logs/qq_channel.log",
+        "feishu": "logs/feishu_channel.log",
         "bus": "logs/bus.log",
         "agent": "logs/agent.log",
         "proactive": "logs/proactive.log",
@@ -115,6 +116,7 @@ class AppRuntime:
         self.tg_channel = None
         self.qq_channel = None
         self.qqbot_channel = None
+        self.feishu_channel = None
         self.core: CoreRuntime | None = None
         self.agent_loop = None
         self.bus = None
@@ -166,7 +168,7 @@ class AppRuntime:
             await self.core.start()
 
             plugin_manager = getattr(self.core, "plugin_manager", None)
-            self.ipc, self.tg_channel, self.qq_channel, self.qqbot_channel = await start_channels(
+            self.ipc, self.tg_channel, self.qq_channel, self.qqbot_channel, self.feishu_channel = await start_channels(
                 self.config,
                 bus=self.bus,
                 session_manager=self.session_manager,
@@ -254,6 +256,10 @@ class AppRuntime:
                 (
                     "qqbot.stop",
                     self.qqbot_channel.stop if self.qqbot_channel else _noop_async,
+                ),
+                (
+                    "feishu.stop",
+                    self.feishu_channel.stop if self.feishu_channel else _noop_async,
                 ),
                 (
                     "memory_runtime.aclose",

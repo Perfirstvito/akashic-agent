@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from agent.config_models import (
     ChannelsConfig,
     Config,
+    FeishuChannelConfig,
     FitbitIntegrationConfig,
     MemoryConfig,
     MemoryEmbeddingConfig,
@@ -239,6 +240,24 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                 groups=groups,
             )
 
+    feishu = None
+    if feishu_data := channels_data.get("feishu"):
+        app_id = _normalize_optional_config_text(
+            _resolve(str(feishu_data.get("app_id", "")))
+        )
+        app_secret = _normalize_optional_config_text(
+            _resolve(str(feishu_data.get("app_secret", "")))
+        )
+        if bool(feishu_data.get("enabled", True)) and app_id and app_secret:
+            feishu = FeishuChannelConfig(
+                app_id=app_id,
+                app_secret=app_secret,
+                allow_from=[
+                    str(u)
+                    for u in feishu_data.get("allow_from", feishu_data.get("allowFrom", []))
+                ],
+            )
+
     socket_value = channels_data.get("socket") or channels_data.get("cli", {}).get(
         "socket", DEFAULT_SOCKET
     )
@@ -246,6 +265,7 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
         telegram=telegram,
         qq=qq,
         qqbot=qqbot,
+        feishu=feishu,
         socket=_normalize_cli_socket_endpoint(socket_value),
     )
     channels.socket = _normalize_cli_socket_endpoint(channels.socket)
@@ -372,6 +392,7 @@ __all__ = [
     "ChannelsConfig",
     "Config",
     "DEFAULT_SOCKET",
+    "FeishuChannelConfig",
     "MemoryConfig",
     "MemoryEmbeddingConfig",
     "QQChannelConfig",

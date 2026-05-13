@@ -21,7 +21,7 @@ async def start_channels(
     event_bus: EventBus,
     bot_commands: list[tuple[str, str]] | None = None,
     interrupt_controller: InterruptController | None = None,
-) -> tuple[Any, Any, Any, Any]:
+) -> tuple[Any, Any, Any, Any, Any]:
     from infra.channels.ipc_server import IPCServerChannel
 
     ipc = IPCServerChannel(bus, config.channels.socket)
@@ -100,4 +100,24 @@ async def start_channels(
         )
         print(f"官方 QQBot 已启动  |  AppID: {qqbot.app_id}")
 
-    return ipc, tg_channel, qq_channel, qqbot_channel
+    feishu_channel = None
+    if config.channels.feishu and config.channels.feishu.app_id:
+        from infra.channels.feishu_channel import FeishuChannel
+
+        feishu = config.channels.feishu
+        feishu_channel = FeishuChannel(
+            app_id=feishu.app_id,
+            app_secret=feishu.app_secret,
+            bus=bus,
+            allow_from=feishu.allow_from,
+            event_bus=event_bus,
+            interrupt_controller=interrupt_controller,
+        )
+        await feishu_channel.start()
+        push_tool.register_channel(
+            "feishu",
+            text=feishu_channel.send,
+        )
+        print(f"飞书 Bot 已启动  |  AppID: {feishu.app_id}")
+
+    return ipc, tg_channel, qq_channel, qqbot_channel, feishu_channel
