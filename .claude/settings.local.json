@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -sL https://raw.githubusercontent.com/larksuite/oapi-sdk-python/v2_main/lark_oapi/channel/channel.py)",
+      "Bash(uv pip:*)",
+      "Bash(timeout 15 uv run python -c \":*)",
+      "Bash(uv run:*)",
+      "Bash(curl -sL https://raw.githubusercontent.com/larksuite/oapi-sdk-python/v2_main/lark_oapi/ws/client.py)",
+      "Bash(curl:*)",
+      "Bash(python -c \"from lark_oapi.ws.pb.pbbp2_pb2 import Frame, FrameType; print\\(FrameType.CONTROL, FrameType.DATA\\); f = Frame\\(\\); print\\(f.fields\\)\")",
+      "Bash(pip install:*)",
+      "Bash(python -c \"from lark_oapi.ws.pb.pbbp2_pb2 import Frame, FrameType; print\\(''CONTROL:'', FrameType.CONTROL, ''DATA:'', FrameType.DATA\\); print\\(dir\\(Frame\\(\\)\\)\\)\")",
+      "Bash(python:*)"
+    ]
+  }
+}
