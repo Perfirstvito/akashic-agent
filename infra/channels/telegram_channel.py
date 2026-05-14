@@ -46,7 +46,7 @@ from infra.channels.telegram_utils import (
 )
 from session.manager import SessionManager
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("telegram")
 
 _CHANNEL = "telegram"
 _SEEN_MSG_MAXSIZE = 500  # 滑动窗口大小，防止内存无限增长

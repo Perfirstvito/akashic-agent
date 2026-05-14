@@ -28,7 +28,7 @@ from bus.events_lifecycle import StreamDeltaReady, TurnStarted
 from bus.queue import MessageBus
 from session.manager import SessionManager
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("qqbot")
 
 _CHANNEL = "qqbot"
 _API_BASE = "https://api.sgroup.qq.com"

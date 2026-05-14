@@ -47,7 +47,7 @@ from session.manager import SessionManager
 # NcatBot 运行时产物（plugins、logs）放到用户目录，不污染项目目录
 _NCATBOT_DIR = Path.home() / ".akashic" / "ncatbot"
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("qq")
 
 _CHANNEL = "qq"
 _GROUP_PREFIX = "gqq:"
