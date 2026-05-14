@@ -533,6 +533,13 @@ class FeishuChannel:
 
         # 追踪 session → message_id（用于 reaction 反馈）
         session_key = f"{_CHANNEL}:{chat_id}"
+        # 新消息到达时，清理同一 session 的旧 pending reaction（如果有的话）
+        old_msg_id = self._session_last_message_id.get(session_key)
+        if old_msg_id and old_msg_id != message_id:
+            old_reaction_id = self._pending_processing_reactions.pop(old_msg_id, None)
+            if old_reaction_id:
+                logger.debug(f"[feishu] 清理旧 reaction: message_id={old_msg_id} reaction_id={old_reaction_id}")
+                await self._remove_reaction(old_msg_id, old_reaction_id)
         self._session_last_message_id[session_key] = message_id
         logger.warning(f"[feishu] ====== 收到消息 ====== session_key={session_key} message_id={message_id}")
 
@@ -785,31 +792,24 @@ class FeishuChannel:
         extra = getattr(event, "extra", None) or {}
         message_id = extra.get("feishu_reaction_message_id")
 
-        # 回退：从 _session_last_message_id 查找
-        if not message_id and session_key in self._session_last_message_id:
-            message_id = self._session_last_message_id.pop(session_key, None)
+        # 回退：从 _session_last_message_id 查找（使用 get 而非 pop，保持幂等）
+        if not message_id:
+            message_id = self._session_last_message_id.get(session_key)
 
         if not message_id:
             return
 
-        reaction_id = self._pop_reaction(message_id)
+        reaction_id = self._pending_processing_reactions.get(message_id)
         logger.warning(f"[feishu] ====== _on_turn_committed 尝试移除 ====== message_id={message_id} reaction_id={reaction_id}")
         if not reaction_id:
+            # reaction 已不存在，清理 session 映射
+            self._session_last_message_id.pop(session_key, None)
             return
 
-        # 检查成功/失败：通过 tool_call_groups 中的 call status 判断
-        has_failure = any(
-            call.status == "error"
-            for tg in (event.tool_call_groups or [])
-            for call in (tg.calls or [])
-        )
+        # 移除 reaction（成功完成，总是清理）
+        logger.debug(f"[feishu] 处理完成，移除 reaction message_id={message_id}")
+        await self._remove_reaction(message_id, reaction_id)
 
-        if has_failure:
-            # 失败：移除 SMILE，添加 SAD
-            logger.debug(f"[feishu] 处理失败，替换 reaction 为 SAD message_id={message_id}")
-            await self._remove_reaction(message_id, reaction_id)
-            await self._add_reaction(message_id, _REACTION_FAILURE)
-        else:
-            # 成功：移除 reaction
-            logger.debug(f"[feishu] 处理完成，移除 reaction message_id={message_id}")
-            await self._remove_reaction(message_id, reaction_id)
+        # 清理缓存
+        self._pending_processing_reactions.pop(message_id, None)
+        self._session_last_message_id.pop(session_key, None)

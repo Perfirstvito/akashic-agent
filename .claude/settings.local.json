@@ -10,7 +10,17 @@
       "Bash(python -c \"from lark_oapi.ws.pb.pbbp2_pb2 import Frame, FrameType; print\\(FrameType.CONTROL, FrameType.DATA\\); f = Frame\\(\\); print\\(f.fields\\)\")",
       "Bash(pip install:*)",
       "Bash(python -c \"from lark_oapi.ws.pb.pbbp2_pb2 import Frame, FrameType; print\\(''CONTROL:'', FrameType.CONTROL, ''DATA:'', FrameType.DATA\\); print\\(dir\\(Frame\\(\\)\\)\\)\")",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(cmd //c type \"\\\\\\\\wsl.localhost\\\\Ubuntu-22.04\\\\home\\\\jaser\\\\.hermes\\\\hermes-agent\\\\gateway\\\\platforms\\\\feishu.py\")",
+      "Bash(cmd //c type \"\\\\\\\\wsl$\\\\Ubuntu-22.04\\\\home\\\\jaser\\\\.hermes\\\\hermes-agent\\\\gateway\\\\platforms\\\\feishu.py\")",
+      "Bash(powershell.exe -Command \"Get-Content '\\\\\\\\wsl.localhost\\\\Ubuntu-22.04\\\\home\\\\jaser\\\\.hermes\\\\hermes-agent\\\\gateway\\\\platforms\\\\feishu.py'\" 2>/dev/null)",
+      "Bash(wsl:*)",
+      "Bash(wsl.exe -d Ubuntu-22.04 cat /home/jaser/.hermes/hermes-agent/gateway/platforms/feishu.py)",
+      "WebSearch",
+      "WebFetch(domain:open.feishu.cn)",
+      "Bash(grep -v \"^$\")",
+      "Bash(pip show:*)",
+      "Bash(pip list:*)"
     ]
   }
 }
