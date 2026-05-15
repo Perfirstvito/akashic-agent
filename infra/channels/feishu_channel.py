@@ -166,6 +166,7 @@ class FeishuChannel:
         self._card_seq: dict[str, int] = {}           # session_key → PUT sequence
         self._card_tool_states: dict[str, list[dict[str, Any]]] = {}  # session_key → [{name, status, result_preview}]
         self._card_reply_buf: dict[str, str] = {}     # session_key → 累积回复
+        self._card_thinking_buf: dict[str, str] = {}  # session_key → 累积思考过程
         self._card_last_push: dict[str, float] = {}   # session_key → 上次推送时间
         self._card_done: set[str] = set()             # 已用卡片回复过的 session_key
 
@@ -248,8 +249,7 @@ class FeishuChannel:
             )
             if resp.status_code == 200:
                 data = resp.json()
-                logger.info(f"[feishu] 添加 reaction 成功，返回体: {data}")
-                # reaction_id 直接在 data 下，不是 data.reaction.reaction_id
+                logger.debug(f"[feishu] 添加 reaction 成功 message_id={message_id}")
                 return data.get("data", {}).get("reaction_id")
             logger.warning("[feishu] 添加 reaction 失败 status=%d: %s", resp.status_code, resp.text)
         except Exception as e:
@@ -266,8 +266,7 @@ class FeishuChannel:
                 f"{_FEISHU_API_BASE}/open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}",
                 headers={"Authorization": f"Bearer {token}"},
             )
-            logger.debug(f"[feishu] 移除 reaction 响应: status={resp.status_code} body={resp.text}")
-            logger.info(f"[feishu] 移除 reaction 响应体: {resp.text}")
+            logger.debug(f"[feishu] 移除 reaction 成功 message_id={message_id}")
             return resp.status_code == 200
         except Exception as e:
             logger.warning("[feishu] 删除 reaction 失败: %s", e)
@@ -553,16 +552,16 @@ class FeishuChannel:
                 logger.debug(f"[feishu] 清理旧 reaction: message_id={old_msg_id} reaction_id={old_reaction_id}")
                 await self._remove_reaction(old_msg_id, old_reaction_id)
         self._session_last_message_id[session_key] = message_id
-        logger.warning(f"[feishu] ====== 收到消息 ====== session_key={session_key} message_id={message_id}")
+        logger.debug(f"[feishu] 收到消息 session_key={session_key} message_id={message_id}")
 
         # 添加 "SMILE" reaction 表示正在处理
         if message_id:
             reaction_id = await self._add_reaction(message_id, _REACTION_IN_PROGRESS)
             if reaction_id:
                 self._cache_reaction(message_id, reaction_id)
-                logger.warning(f"[feishu] ====== 添加 SMILE reaction 成功 ====== message_id={message_id} reaction_id={reaction_id}")
+                logger.debug(f"[feishu] 添加 SMILE reaction 成功 message_id={message_id}")
             else:
-                logger.warning(f"[feishu] ====== 添加 SMILE reaction 失败 ====== message_id={message_id}")
+                logger.warning(f"[feishu] 添加 SMILE reaction 失败 message_id={message_id}")
 
         await self._bus.publish_inbound(
             InboundMessage(
@@ -761,7 +760,7 @@ class FeishuChannel:
         )
         resp.raise_for_status()
         data = resp.json()
-        logger.info("[feishu] 发送消息成功 chat_id=%s msg_type=%s", chat_id, msg_type)
+        logger.debug("[feishu] 发送消息成功 chat_id=%s msg_type=%s", chat_id, msg_type)
         # 返回响应数据供调用方判断 code
         class Response:
             def __init__(self, data):
@@ -827,7 +826,7 @@ class FeishuChannel:
             data = resp.json()
             card_id = (data.get("data") or {}).get("card_id")
             if card_id:
-                logger.info(f"[feishu] 卡片实体创建成功 card_id={card_id}")
+                logger.debug(f"[feishu] 卡片实体创建成功 card_id={card_id}")
             else:
                 logger.warning(f"[feishu] 卡片创建返回200但无card_id: {resp.text[:500]}")
             return card_id
@@ -889,7 +888,7 @@ class FeishuChannel:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "config": {"streaming_mode": False},
+                    "settings": json.dumps({"config": {"streaming_mode": False}}),
                     "sequence": seq,
                 },
             )
@@ -907,60 +906,94 @@ class FeishuChannel:
         """根据当前状态渲染卡片 markdown 内容"""
         tools = self._card_tool_states.get(session_key, [])
         reply = self._card_reply_buf.get(session_key, "")
+        thinking_buf = self._card_thinking_buf.get(session_key, "")
+        thinking_exists = bool(thinking_buf)
 
         # 工具链
         tool_lines: list[str] = []
         for t in tools:
             name = t.get("name", "unknown")
+            desc = t.get("description", "")
             status = t.get("status", "running")
+            label = f"{desc} - `{name}`" if desc else f"`{name}`"
             if status == "done":
-                tool_lines.append(f"✅ `{name}` 完成")
+                tool_lines.append(f"✅ {label} 完成")
             else:
-                tool_lines.append(f"🔧 正在调用 `{name}`...")
+                tool_lines.append(f"🔧 {label}...")
 
         tool_block = "\n".join(tool_lines)
 
-        # finalize 模式：保留工具链折叠展示
-        if finalize:
-            if tool_block and reply:
-                return tool_block + "\n\n───\n\n" + reply
-            return reply or tool_block or "—"
+        # 思考指示器：仅在纯思考阶段显示（无工具、无回复），动态变化
+        thinking_block = ""
+        if not tool_block and not reply and not finalize:
+            if thinking_exists:
+                # 有推理内容 → 动态圆点（随 buffer 增长自然循环）
+                dots_count = (len(thinking_buf) // 5) % 4
+                dots = "." * dots_count
+                thinking_block = f"💭 深度思考中{dots}"
+            else:
+                # 无推理内容 → 静态指示器（兼容普通模型）
+                thinking_block = "💭 思考中..."
 
-        # 流式中：工具链 + (如果有回复) 分隔线 + 回复片段
-        if tool_block and reply:
-            return tool_block + "\n\n───\n\n" + reply
-        if tool_block:
-            return tool_block
+        # 上半部分：思考指示器 + 工具链（无分隔符，自然连接）
+        meta_parts = [p for p in [thinking_block, tool_block] if p]
+        meta = "\n\n".join(meta_parts)
+
+        # finalize 模式：不展示思考内容，保留工具链 + 回复
+        if finalize:
+            if meta and reply:
+                return meta + "\n\n───\n\n" + reply
+            return reply or meta or "—"
+
+        # 流式模式：meta 部分 + ─── + 回复片段
+        if meta and reply:
+            return meta + "\n\n───\n\n" + reply
+        if meta:
+            return meta
         if reply:
             return reply
         return "🤔 思考中..."
 
     # ── 卡片推送（带节流） ───────────────────────────────────────────────────
 
+    # 卡片创建并发锁（防止 TurnStarted 和 StreamDeltaReady 同时创建）
+    _PENDING = "__pending__"
+
     async def _push_card_update(
         self, session_key: str, *, finalize: bool = False, force: bool = False
     ) -> None:
         """推送卡片内容更新（带节流控制）"""
         card_id = self._card_id.get(session_key)
-        if not card_id:
-            # 还没有卡片 — 这是第一次推送，需要创建卡片
-            content = self._render_card_content(session_key, finalize=finalize)
-            card_id = await self._create_card_entity(content)
-            if not card_id:
-                logger.warning(f"[feishu] 卡片创建失败，流式降级 session_key={session_key}")
-                return
-            self._card_id[session_key] = card_id
-            self._card_seq[card_id] = 1
 
-            # 从 _session_last_message_id 获取 reply_to
-            reply_to = self._session_last_message_id.get(session_key)
-            resp = await self._send_card_message(
-                session_key.split(":", 1)[1] if ":" in session_key else session_key,
-                card_id,
-                reply_to=reply_to,
-            )
-            logger.info(f"[feishu] 卡片消息已发送 card_id={card_id} status={getattr(resp, 'status_code', '?')}")
+        # 卡片正在创建中，跳过（内容会在创建完成后通过后续推送更新）
+        if card_id == self._PENDING:
             return
+
+        if not card_id:
+            # 还没有卡片 — 设置锁，防止并发重复创建
+            self._card_id[session_key] = self._PENDING
+            try:
+                content = self._render_card_content(session_key, finalize=finalize)
+                card_id = await self._create_card_entity(content)
+                if not card_id:
+                    self._card_id.pop(session_key, None)
+                    logger.warning(f"[feishu] 卡片创建失败，流式降级 session_key={session_key}")
+                    return
+                self._card_id[session_key] = card_id
+                self._card_seq[card_id] = 1
+
+                # 从 _session_last_message_id 获取 reply_to
+                reply_to = self._session_last_message_id.get(session_key)
+                resp = await self._send_card_message(
+                    session_key.split(":", 1)[1] if ":" in session_key else session_key,
+                    card_id,
+                    reply_to=reply_to,
+                )
+                logger.debug(f"[feishu] 卡片消息已发送 card_id={card_id}")
+                return
+            except Exception:
+                self._card_id.pop(session_key, None)
+                raise
 
         # 节流检查
         now = time.time()
@@ -988,7 +1021,7 @@ class FeishuChannel:
     # ── 事件处理 ─────────────────────────────────────────────────────────────
 
     async def _on_turn_started(self, event: TurnStarted) -> None:
-        """初始化新 turn 的卡片流式状态"""
+        """初始化新 turn 的卡片流式状态，并立即展示思考指示器"""
         if event.channel != _CHANNEL:
             return
         session_key = event.session_key
@@ -996,8 +1029,12 @@ class FeishuChannel:
         self._card_seq.pop(session_key, None)
         self._card_tool_states.pop(session_key, None)
         self._card_reply_buf.pop(session_key, None)
+        self._card_thinking_buf.pop(session_key, None)
         self._card_last_push.pop(session_key, None)
         self._card_done.discard(session_key)
+
+        # 立即创建卡片展示思考指示器（不依赖 reasoning 模型）
+        await self._push_card_update(session_key, force=True)
         logger.debug(f"[feishu] 卡片流式状态已初始化 session_key={session_key}")
 
     async def _on_tool_call_started(self, event: ToolCallStarted) -> None:
@@ -1009,6 +1046,7 @@ class FeishuChannel:
         tools.append({
             "call_id": event.call_id,
             "name": event.tool_name,
+            "description": (event.arguments or {}).get("description", ""),
             "status": "running",
         })
         logger.debug(f"[feishu] 工具开始: {event.tool_name} session_key={session_key}")
@@ -1029,17 +1067,29 @@ class FeishuChannel:
         await self._push_card_update(session_key, force=True)
 
     async def _on_stream_delta(self, event: StreamDeltaReady) -> None:
-        """流式文本到达 → 累积回复 → 推卡片"""
+        """流式文本到达 → 累积回复/思考 → 推卡片"""
         if event.channel != _CHANNEL:
             return
-        if not event.content_delta:
+        if not event.content_delta and not event.thinking_delta:
             return
         session_key = event.session_key
-        current = self._card_reply_buf.get(session_key, "")
-        self._card_reply_buf[session_key] = current + event.content_delta
+
+        # 累积回复文本
+        if event.content_delta:
+            current = self._card_reply_buf.get(session_key, "")
+            self._card_reply_buf[session_key] = current + event.content_delta
+
+        # 累积思考过程
+        if event.thinking_delta:
+            current = self._card_thinking_buf.get(session_key, "")
+            self._card_thinking_buf[session_key] = current + event.thinking_delta
 
         # 检查增量是否够推送
-        if session_key not in self._card_id:
+        card_id = self._card_id.get(session_key)
+        if card_id == self._PENDING:
+            # 卡片正在创建中，只累积不推送（创建完成后由后续事件更新）
+            return
+        if card_id is None:
             # 还没有卡片 — 等 ToolCallStarted 或直接创建
             tools = self._card_tool_states.get(session_key, [])
             if not tools:
@@ -1071,14 +1121,17 @@ class FeishuChannel:
             return
 
         session_key = event.session_key
-        logger.warning(
-            f"[feishu] ====== _on_turn_committed ====== session_key={session_key} "
-            f"card_active={session_key in self._card_id} "
-            f"_session_last_message_id={dict(self._session_last_message_id)}"
+        logger.debug(
+            f"[feishu] _on_turn_committed session_key={session_key} "
+            f"card_active={session_key in self._card_id}"
         )
 
         # ── 卡片 finalize ──
-        if session_key in self._card_id:
+        card_id = self._card_id.get(session_key)
+        if card_id == self._PENDING:
+            # 卡片还在创建中，无法 finalize；清理锁让后续流程处理
+            self._card_id.pop(session_key, None)
+        elif card_id is not None:
             # 确保 reply_buffer 有最终回复
             if event.assistant_response and not self._card_reply_buf.get(session_key):
                 self._card_reply_buf[session_key] = event.assistant_response
@@ -1090,6 +1143,7 @@ class FeishuChannel:
             self._card_seq.pop(session_key, None)
             self._card_tool_states.pop(session_key, None)
             self._card_reply_buf.pop(session_key, None)
+            self._card_thinking_buf.pop(session_key, None)
             self._card_last_push.pop(session_key, None)
             logger.debug(f"[feishu] 卡片已 finalize session_key={session_key}")
 
@@ -1106,7 +1160,7 @@ class FeishuChannel:
             return
 
         reaction_id = self._pending_processing_reactions.get(message_id)
-        logger.warning(f"[feishu] ====== _on_turn_committed 尝试移除 ====== message_id={message_id} reaction_id={reaction_id}")
+        logger.debug(f"[feishu] 移除 reaction message_id={message_id} reaction_id={reaction_id}")
         if not reaction_id:
             self._session_last_message_id.pop(session_key, None)
             return
