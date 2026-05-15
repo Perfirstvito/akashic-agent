@@ -125,12 +125,14 @@ class FeishuChannel:
         allow_from: list[str] | None = None,
         event_bus: EventBus | None = None,
         interrupt_controller: InterruptController | None = None,
+        enable_thinking: bool = False,
     ) -> None:
         self._app_id = app_id
         self._app_secret = app_secret
         self._bus = bus
         self._allow_from = set(allow_from) if allow_from else set()
         self._interrupt_controller = interrupt_controller
+        self._thinking_enabled = enable_thinking
 
         # HTTP 客户端
         self._http = httpx.AsyncClient(timeout=30.0)
@@ -168,6 +170,9 @@ class FeishuChannel:
         self._card_reply_buf: dict[str, str] = {}     # session_key → 累积回复
         self._card_thinking_buf: dict[str, str] = {}  # session_key → 累积思考过程
         self._card_last_push: dict[str, float] = {}   # session_key → 上次推送时间
+        self._card_last_think_push: dict[str, float] = {}  # session_key → 上次思考推送时间
+        self._card_last_think_len: dict[str, int] = {}    # session_key → 上次推送时的思考长度
+        self._card_last_reply_len: dict[str, int] = {}    # session_key → 上次推送时的回复长度
         self._card_done: set[str] = set()             # 已用卡片回复过的 session_key
 
         # 订阅事件总线
@@ -774,9 +779,41 @@ class FeishuChannel:
     _CARD_PUSH_MIN_INTERVAL = 0.15     # 最小推送间隔 (秒)
     _CARD_PUSH_MIN_CHARS = 20          # 最小增量字符数
     _CARD_PUSH_FORCE_INTERVAL = 0.5    # 强制推送间隔 (秒)
+    _CARD_THINK_PUSH_INTERVAL = 0.2   # 思考面板独立推送间隔（积累后批量推送）
+
+    # 思考面板元素 ID（需与 _build_card_json 中的 element_id 一致）
+    _THINK_ELEMENT_ID = "think_md"
 
     def _build_card_json(self, content: str) -> str:
-        """构建 Card JSON 2.0（带 streaming_mode）"""
+        """构建 Card JSON 2.0（带 streaming_mode，选配思考折叠面板）"""
+        elements: list[dict[str, Any]] = []
+
+        # 思考折叠面板：默认折叠，流式更新内嵌 markdown
+        if self._thinking_enabled:
+            elements.append({
+                "tag": "collapsible_panel",
+                "expanded": False,
+                "header": {
+                    "title": {"tag": "plain_text", "content": "💭 思考过程"},
+                    "vertical_align": "center",
+                },
+                "vertical_spacing": "4px",
+                "padding": "4px 4px 4px 4px",
+                "border": {"color": "grey", "corner_radius": "4px"},
+                "elements": [{
+                    "tag": "markdown",
+                    "element_id": self._THINK_ELEMENT_ID,
+                    "content": "—",
+                }],
+            })
+
+        # 主回复
+        elements.append({
+            "tag": "markdown",
+            "element_id": "markdown_1",
+            "content": content,
+        })
+
         return json.dumps({
             "schema": "2.0",
             "config": {
@@ -794,13 +831,7 @@ class FeishuChannel:
                 "template": "blue",
             },
             "body": {
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "element_id": "markdown_1",
-                        "content": content,
-                    }
-                ]
+                "elements": elements,
             },
         }, ensure_ascii=False)
 
@@ -857,12 +888,12 @@ class FeishuChannel:
         )
         return resp
 
-    async def _update_card_content(self, card_id: str, content: str, seq: int) -> bool:
-        """PUT /cardkit/v1/cards/{id}/elements/markdown_1/content — 流式更新卡片"""
+    async def _update_element_content(self, card_id: str, element_id: str, content: str, seq: int) -> bool:
+        """PUT /cardkit/v1/cards/{id}/elements/{eid}/content — 流式更新元素"""
         try:
             token = await self._get_access_token()
             resp = await self._http.put(
-                f"{_FEISHU_API_BASE}/open-apis/cardkit/v1/cards/{card_id}/elements/markdown_1/content",
+                f"{_FEISHU_API_BASE}/open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}/content",
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Content-Type": "application/json",
@@ -870,12 +901,20 @@ class FeishuChannel:
                 json={"content": content, "sequence": seq},
             )
             if resp.status_code != 200:
-                logger.warning(f"[feishu] 更新卡片内容失败 status={resp.status_code}: {resp.text}")
+                logger.warning(f"[feishu] 更新 {element_id} 失败 status={resp.status_code}: {resp.text}")
                 return False
             return True
         except Exception as e:
-            logger.warning(f"[feishu] 更新卡片内容异常: {e}")
+            logger.warning(f"[feishu] 更新 {element_id} 异常: {e}")
             return False
+
+    async def _update_card_content(self, card_id: str, content: str, seq: int) -> bool:
+        """流式更新主回复 markdown_1"""
+        return await self._update_element_content(card_id, "markdown_1", content, seq)
+
+    async def _update_thinking_content(self, card_id: str, content: str, seq: int) -> bool:
+        """流式更新思考面板 think_md"""
+        return await self._update_element_content(card_id, self._THINK_ELEMENT_ID, content, seq)
 
     async def _disable_streaming_mode(self, card_id: str, seq: int) -> bool:
         """PATCH /cardkit/v1/cards/{id}/settings — 关闭 streaming_mode"""
@@ -903,11 +942,9 @@ class FeishuChannel:
     # ── 卡片内容渲染 ─────────────────────────────────────────────────────────
 
     def _render_card_content(self, session_key: str, *, finalize: bool = False) -> str:
-        """根据当前状态渲染卡片 markdown 内容"""
+        """根据当前状态渲染卡片主 markdown 内容（工具链 + 回复）"""
         tools = self._card_tool_states.get(session_key, [])
         reply = self._card_reply_buf.get(session_key, "")
-        thinking_buf = self._card_thinking_buf.get(session_key, "")
-        thinking_exists = bool(thinking_buf)
 
         # 工具链
         tool_lines: list[str] = []
@@ -923,36 +960,21 @@ class FeishuChannel:
 
         tool_block = "\n".join(tool_lines)
 
-        # 思考指示器：仅在纯思考阶段显示（无工具、无回复），动态变化
-        thinking_block = ""
-        if not tool_block and not reply and not finalize:
-            if thinking_exists:
-                # 有推理内容 → 动态圆点（随 buffer 增长自然循环）
-                dots_count = (len(thinking_buf) // 5) % 4
-                dots = "." * dots_count
-                thinking_block = f"💭 深度思考中{dots}"
-            else:
-                # 无推理内容 → 静态指示器（兼容普通模型）
-                thinking_block = "💭 思考中..."
-
-        # 上半部分：思考指示器 + 工具链（无分隔符，自然连接）
-        meta_parts = [p for p in [thinking_block, tool_block] if p]
-        meta = "\n\n".join(meta_parts)
-
-        # finalize 模式：不展示思考内容，保留工具链 + 回复
+        # finalize 模式
         if finalize:
-            if meta and reply:
-                return meta + "\n\n───\n\n" + reply
-            return reply or meta or "—"
+            if tool_block and reply:
+                return tool_block + "\n\n───\n\n" + reply
+            return reply or tool_block or "—"
 
-        # 流式模式：meta 部分 + ─── + 回复片段
-        if meta and reply:
-            return meta + "\n\n───\n\n" + reply
-        if meta:
-            return meta
+        # 流式模式
+        if tool_block and reply:
+            return tool_block + "\n\n───\n\n" + reply
+        if tool_block:
+            return tool_block
         if reply:
             return reply
-        return "🤔 思考中..."
+        # 未开启思考时展示占位；开启时面板已有 "💭 思考过程"，主区域用最小占位
+        return "💭 思考中..." if not self._thinking_enabled else "—"
 
     # ── 卡片推送（带节流） ───────────────────────────────────────────────────
 
@@ -1000,12 +1022,30 @@ class FeishuChannel:
         last = self._card_last_push.get(session_key, 0)
         seq = self._card_seq.get(card_id, 0)
 
+        # 思考面板：静默累积，工具开始时一次性展示（不流式推送）
+        if self._thinking_enabled:
+            thinking = self._card_thinking_buf.get(session_key, "")
+            if thinking and force and not finalize:
+                seq += 1
+                await self._update_thinking_content(card_id, thinking, seq)
+            elif finalize and thinking:
+                seq += 1
+                await self._update_thinking_content(card_id, thinking, seq)
+
+        # 主回复：思考阶段跳过，force/finalize 时正常推送
         if not force and not finalize:
+            reply = self._card_reply_buf.get(session_key, "")
+            thinking_active = bool(self._card_thinking_buf.get(session_key, "")) and not reply
+            if thinking_active:
+                return  # 思考还在进行中，不推送主回复
             if now - last < self._CARD_PUSH_MIN_INTERVAL:
                 return
             # 增量不够不推，除非超过强制间隔
             if now - last < self._CARD_PUSH_FORCE_INTERVAL:
-                pass  # 即使增量不够也继续
+                reply_grew = len(self._card_reply_buf.get(session_key, ""))
+                last_reply_len = self._card_last_reply_len.get(session_key, 0)
+                if reply_grew - last_reply_len < self._CARD_PUSH_MIN_CHARS:
+                    return
 
         content = self._render_card_content(session_key, finalize=finalize)
         seq += 1
@@ -1013,6 +1053,7 @@ class FeishuChannel:
         if success:
             self._card_seq[card_id] = seq
             self._card_last_push[session_key] = now
+            self._card_last_reply_len[session_key] = len(self._card_reply_buf.get(session_key, ""))
 
         if finalize:
             seq += 1
@@ -1031,6 +1072,8 @@ class FeishuChannel:
         self._card_reply_buf.pop(session_key, None)
         self._card_thinking_buf.pop(session_key, None)
         self._card_last_push.pop(session_key, None)
+        self._card_last_think_push.pop(session_key, None)
+        self._card_last_reply_len.pop(session_key, None)
         self._card_done.discard(session_key)
 
         # 立即创建卡片展示思考指示器（不依赖 reasoning 模型）
@@ -1083,6 +1126,7 @@ class FeishuChannel:
         if event.thinking_delta:
             current = self._card_thinking_buf.get(session_key, "")
             self._card_thinking_buf[session_key] = current + event.thinking_delta
+            logger.debug(f"[feishu] 思考到达 len={len(event.thinking_delta)} total={len(self._card_thinking_buf[session_key])}")
 
         # 检查增量是否够推送
         card_id = self._card_id.get(session_key)
@@ -1145,6 +1189,8 @@ class FeishuChannel:
             self._card_reply_buf.pop(session_key, None)
             self._card_thinking_buf.pop(session_key, None)
             self._card_last_push.pop(session_key, None)
+            self._card_last_think_push.pop(session_key, None)
+            self._card_last_reply_len.pop(session_key, None)
             logger.debug(f"[feishu] 卡片已 finalize session_key={session_key}")
 
         # ── Reaction 清除 ──

@@ -349,6 +349,21 @@ class LLMProvider:
                 reasoning_parts.append(reasoning_piece)
                 if not tool_call_seen:
                     await on_content_delta({"thinking_delta": reasoning_piece})
+                    logger.debug(f"[provider] thinking_delta emitted len={len(reasoning_piece)}")
+            elif reasoning_parts:
+                # 已有推理内容后又变空 — 正常（推理结束）
+                pass
+            else:
+                # 首个 delta：探测 reasoning_content 是否存在
+                _has = hasattr(delta, "reasoning_content") or (
+                    isinstance(delta, dict) and "reasoning_content" in delta
+                )
+                if not getattr(self, "_reasoning_probed", False):
+                    logger.info(
+                        "[provider] reasoning_content probe: has_field=%s type=%s",
+                        _has, type(delta).__name__,
+                    )
+                    self._reasoning_probed = True
 
             for tc in _iter_tool_call_deltas(delta):
                 tool_call_seen = True

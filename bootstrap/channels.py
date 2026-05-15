@@ -112,6 +112,7 @@ async def start_channels(
             allow_from=feishu.allow_from,
             event_bus=event_bus,
             interrupt_controller=interrupt_controller,
+            enable_thinking=bool(config.extra_body.get("enable_thinking")),
         )
         await feishu_channel.start()
         push_tool.register_channel(

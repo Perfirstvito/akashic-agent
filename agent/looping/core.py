@@ -75,6 +75,7 @@ def _is_positive_int(value: str) -> bool:
 
 _STREAM_SUPPORT_POLICIES: dict[str, StreamSupportPolicy] = {
     "telegram": _is_positive_int,
+    "feishu": lambda _: True,
 }
 
 
