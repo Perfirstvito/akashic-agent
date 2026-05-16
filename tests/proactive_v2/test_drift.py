@@ -10,22 +10,22 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.prompting import is_context_frame
+from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.looping.ports import SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import OutboundDispatch
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
-from proactive_v2.agent_tick import AgentTick
 from proactive_v2.context import AgentTickContext
-from proactive_v2.drift_runner import DriftRunner
+from agent.core.drift_turn import DriftTurnPipeline, DriftTurnPipelineDeps
 from proactive_v2.drift_state import DriftStateStore
 from proactive_v2.drift_tools import DriftToolDeps, build_drift_tool_registry
 from proactive_v2.agent_tick_factory import AgentTickDeps, AgentTickFactory
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.mcp_sources import McpClientPool
 from proactive_v2.tools import ToolDeps
-from tests.proactive_v2.conftest import FakeLLM, FakeRng, cfg_with, make_agent_tick
+from tests.proactive_v2.conftest import FakeLLM, FakeRng, cfg_with, make_proactive_pipeline
 
 
 def _write_skill(root: Path, name: str = "explore-curiosity") -> Path:
@@ -122,6 +122,21 @@ async def _exec_drift_tool(
     return await reg.execute(tool_name, args)
 
 
+def _make_drift_pipeline(
+    *,
+    store: DriftStateStore,
+    tool_deps: DriftToolDeps,
+    max_steps: int = 20,
+) -> DriftTurnPipeline:
+    return DriftTurnPipeline(
+        DriftTurnPipelineDeps(
+            store=store,
+            tool_deps=tool_deps,
+            max_steps=max_steps,
+        )
+    )
+
+
 def test_drift_tool_schemas_include_reused_tools():
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
     names = {
@@ -186,7 +201,7 @@ async def test_drift_message_push_sends_media(tmp_path: Path):
 def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
-    runner = DriftRunner(
+    pipeline = _make_drift_pipeline(
         store=store,
         tool_deps=DriftToolDeps(
             drift_dir=tmp_path,
@@ -194,8 +209,8 @@ def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(tmp_pat
             shared_tools=_build_shared_tools(),
         ),
     )
-    prompt = runner._build_system_prompt()
-    runtime = str(runner._build_runtime_context_message(store.scan_skills())["content"])
+    prompt = pipeline._build_system_prompt()
+    runtime = str(pipeline._build_runtime_context_message(store.scan_skills())["content"])
     assert "不要因为某个 skill 最近刚运行过" in prompt
     assert "如果这个 skill 当前明显处于“等待用户回复/等待外部条件”的状态，就不要选它" in prompt
     assert "对用户的表达要像此刻自然想到的一句聊天" in prompt
@@ -379,7 +394,7 @@ def test_drift_state_store_scan_skills_reads_frontmatter(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_drift_runner_runs_and_finishes(tmp_path: Path):
+async def test_drift_pipeline_runs_and_finishes(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
     llm = FakeLLM(
@@ -397,7 +412,7 @@ async def test_drift_runner_runs_and_finishes(tmp_path: Path):
         ]
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
-    runner = DriftRunner(
+    pipeline = _make_drift_pipeline(
         store=store,
         tool_deps=DriftToolDeps(
             drift_dir=tmp_path,
@@ -406,7 +421,7 @@ async def test_drift_runner_runs_and_finishes(tmp_path: Path):
         ),
         max_steps=5,
     )
-    entered = await runner.run(ctx, cast(Any, llm))
+    entered = await pipeline.run(ctx, cast(Any, llm))
     assert entered is True
     assert ctx.drift_finished is True
     assert is_context_frame(str(llm.calls[0][1]["content"]))
@@ -416,7 +431,7 @@ async def test_drift_runner_runs_and_finishes(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
+async def test_drift_pipeline_restricts_tools_after_send_message(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
     send_message = AsyncMock(return_value=True)
@@ -434,7 +449,7 @@ async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
             ),
         ]
     )
-    runner = DriftRunner(
+    pipeline = _make_drift_pipeline(
         store=store,
         tool_deps=DriftToolDeps(
             drift_dir=tmp_path,
@@ -445,10 +460,10 @@ async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
         max_steps=5,
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
-    await runner.run(ctx, cast(Any, llm))
+    await pipeline.run(ctx, cast(Any, llm))
     second_names = {schema["function"]["name"] for schema in llm.calls[1][0:1]} if False else None
     assert llm.calls
-    # 第二次 llm 调用的 schemas 只能由 DriftRunner 约束为 write_file/edit_file/finish_drift；
+    # 第二次 llm 调用的 schemas 只能由 DriftTurnPipeline 约束为 write_file/edit_file/finish_drift；
     # FakeLLM 不记录 schemas，这里用行为结果兜底：send 后仍正常 finish。
     assert ctx.drift_finished is True
     assert store.load_drift()["recent_runs"][-1]["message_result"] == "sent"
@@ -456,7 +471,7 @@ async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_drift_runner_does_not_force_finish_at_step_limit(tmp_path: Path):
+async def test_drift_pipeline_does_not_force_finish_at_step_limit(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
     captured: list[tuple[list[str], str | dict]] = []
@@ -478,7 +493,7 @@ async def test_drift_runner_does_not_force_finish_at_step_limit(tmp_path: Path):
             }
         return None
 
-    runner = DriftRunner(
+    pipeline = _make_drift_pipeline(
         store=store,
         tool_deps=DriftToolDeps(
             drift_dir=tmp_path,
@@ -488,7 +503,7 @@ async def test_drift_runner_does_not_force_finish_at_step_limit(tmp_path: Path):
         max_steps=3,
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
-    await runner.run(ctx, cast(Any, llm))
+    await pipeline.run(ctx, cast(Any, llm))
     assert "finish_drift" in captured[2][0]
     assert "read_file" in captured[2][0]
     assert captured[2][1] == "required"
@@ -514,7 +529,7 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
             ),
         ]
     )
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         cfg=cfg_with(drift_enabled=True),
         any_action_gate=gate,
         llm_fn=llm,
@@ -525,7 +540,7 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
             context_fn=AsyncMock(return_value=[]),
         ),
         rng=FakeRng(value=1.0),
-        drift_runner=DriftRunner(
+        drift_pipeline=_make_drift_pipeline(
             store=DriftStateStore(tmp_path),
             tool_deps=DriftToolDeps(
                 drift_dir=tmp_path,
@@ -535,7 +550,7 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
             max_steps=5,
         ),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.drift_entered is True
     gate.record_action.assert_called_once()
     assert len(tick._state_store.tick_step_logs) == 2
@@ -610,51 +625,55 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
             ),
         ]
     )
-    tick = AgentTick(
-        cfg=cfg_with(
-            drift_enabled=True,
-            default_channel="telegram",
-            default_chat_id="1",
-        ),
-        session_key="test_session",
-        state_store=SimpleNamespace(
-            count_deliveries_in_window=lambda *_args: 0,
-            get_last_context_only_at=lambda *_args: None,
-            count_context_only_in_window=lambda *_args, **_kwargs: 0,
-            get_last_drift_at=lambda *_args: None,
-            mark_drift_run=lambda *_args, **_kwargs: None,
-            is_delivery_duplicate=lambda *_args, **_kwargs: False,
-            record_tick_log_start=lambda **_kwargs: None,
-            record_tick_log_finish=lambda **_kwargs: None,
-            record_tick_step_log=lambda **_kwargs: None,
-        ),
-        any_action_gate=gate,
-        last_user_at_fn=lambda: None,
-        passive_busy_fn=None,
-        turn_orchestrator=orchestrator,
-        deduper=AsyncMock(),
-        tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
-        gateway_deps=GatewayDeps(
-            alert_fn=AsyncMock(return_value=[]),
-            feed_fn=AsyncMock(return_value=[]),
-            context_fn=AsyncMock(return_value=[]),
-        ),
-        llm_fn=llm,
-        rng=FakeRng(value=1.0),
-        recent_proactive_fn=lambda: [],
-        drift_runner=DriftRunner(
-            store=DriftStateStore(tmp_path),
-            tool_deps=DriftToolDeps(
-                drift_dir=tmp_path,
-                store=DriftStateStore(tmp_path),
-                shared_tools=_build_shared_tools(),
-                send_message_fn=send_message,
+    tick = ProactiveTurnPipeline(
+        ProactiveTurnPipelineDeps(
+            cfg=cfg_with(
+                drift_enabled=True,
+                default_channel="telegram",
+                default_chat_id="1",
             ),
-            max_steps=5,
-        ),
+            session_key="test_session",
+            state_store=SimpleNamespace(
+                count_deliveries_in_window=lambda *_args: 0,
+                get_last_context_only_at=lambda *_args: None,
+                count_context_only_in_window=lambda *_args, **_kwargs: 0,
+                get_last_drift_at=lambda *_args: None,
+                mark_drift_run=lambda *_args, **_kwargs: None,
+                is_delivery_duplicate=lambda *_args, **_kwargs: False,
+                record_tick_log_start=lambda **_kwargs: None,
+                record_tick_log_finish=lambda **_kwargs: None,
+                record_tick_step_log=lambda **_kwargs: None,
+            ),
+            any_action_gate=gate,
+            last_user_at_fn=lambda: None,
+            passive_busy_fn=None,
+            turn_orchestrator=orchestrator,
+            deduper=AsyncMock(),
+            tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
+            gateway_deps=GatewayDeps(
+                alert_fn=AsyncMock(return_value=[]),
+                feed_fn=AsyncMock(return_value=[]),
+                context_fn=AsyncMock(return_value=[]),
+            ),
+            workspace_context_fn=None,
+            llm_fn=llm,
+            rng=FakeRng(value=1.0),
+            recent_proactive_fn=lambda: [],
+            drift_pipeline=_make_drift_pipeline(
+                store=DriftStateStore(tmp_path),
+                tool_deps=DriftToolDeps(
+                    drift_dir=tmp_path,
+                    store=DriftStateStore(tmp_path),
+                    shared_tools=_build_shared_tools(),
+                    send_message_fn=send_message,
+                ),
+                max_steps=5,
+            ),
+            tool_hooks=None,
+        )
     )
 
-    await tick.tick()
+    await tick.run()
 
     sender.assert_awaited_once_with("hello from drift")
     gate.record_action.assert_called_once()
@@ -764,12 +783,12 @@ async def test_drift_readfile_accepts_builtin_skill_shorthand_path(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_drift_runner_filters_skills_by_mcp(tmp_path: Path):
+async def test_drift_pipeline_filters_skills_by_mcp(tmp_path: Path):
     """Skill requiring unavailable MCP server should be filtered out."""
     _write_skill_with_mcp(tmp_path, "needs-cal", "calendar")
     store = DriftStateStore(tmp_path)
     shared = _build_shared_tools()  # no MCP tools registered
-    runner = DriftRunner(
+    pipeline = _make_drift_pipeline(
         store=store,
         tool_deps=DriftToolDeps(
             drift_dir=tmp_path,
@@ -779,12 +798,12 @@ async def test_drift_runner_filters_skills_by_mcp(tmp_path: Path):
         max_steps=5,
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
-    entered = await runner.run(ctx, cast(Any, FakeLLM([])))
+    entered = await pipeline.run(ctx, cast(Any, FakeLLM([])))
     assert entered is False  # all skills filtered, drift should skip
 
 
 @pytest.mark.asyncio
-async def test_drift_runner_keeps_skills_when_mcp_available(tmp_path: Path):
+async def test_drift_pipeline_keeps_skills_when_mcp_available(tmp_path: Path):
     """Skill requiring available MCP server should pass filter."""
     _write_skill_with_mcp(tmp_path, "needs-cal", "calendar")
     store = DriftStateStore(tmp_path)
@@ -801,13 +820,13 @@ async def test_drift_runner_keeps_skills_when_mcp_available(tmp_path: Path):
             },
         ),
     ])
-    runner = DriftRunner(
+    pipeline = _make_drift_pipeline(
         store=store,
         tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
         max_steps=5,
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
-    entered = await runner.run(ctx, cast(Any, llm))
+    entered = await pipeline.run(ctx, cast(Any, llm))
     assert entered is True
     assert ctx.drift_finished is True
 
@@ -881,8 +900,8 @@ async def test_mount_server_not_registered_without_mcp(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_drift_runner_executes_mounted_mcp_tool(tmp_path: Path):
-    """After mount_server, runner should dispatch MCP tool calls to shared registry."""
+async def test_drift_pipeline_executes_mounted_mcp_tool(tmp_path: Path):
+    """After mount_server, pipeline should dispatch MCP tool calls to shared registry."""
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
     shared = _build_shared_tools_with_mcp("calendar")
@@ -907,13 +926,13 @@ async def test_drift_runner_executes_mounted_mcp_tool(tmp_path: Path):
             }
         return None
 
-    runner = DriftRunner(
+    pipeline = _make_drift_pipeline(
         store=store,
         tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
         max_steps=10,
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
-    await runner.run(ctx, cast(Any, llm))
+    await pipeline.run(ctx, cast(Any, llm))
     assert ctx.drift_finished is True
     # After mount (step 1), step 2 should see MCP tools in schemas
     assert "mcp_calendar__tool_a" in captured_schemas[1]
@@ -926,12 +945,12 @@ def test_system_prompt_includes_mcp_directory(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
     shared = _build_shared_tools_with_mcp("calendar")
-    runner = DriftRunner(
+    pipeline = _make_drift_pipeline(
         store=store,
         tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
     )
     content = str(
-        runner._build_runtime_context_message(
+        pipeline._build_runtime_context_message(
             store.scan_skills(), shared.get_mcp_server_names()
         )["content"]
     )
@@ -947,11 +966,11 @@ def test_system_prompt_includes_mcp_directory(tmp_path: Path):
 def test_system_prompt_no_mcp_block_without_servers(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
-    runner = DriftRunner(
+    pipeline = _make_drift_pipeline(
         store=store,
         tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=_build_shared_tools()),
     )
-    content = str(runner._build_runtime_context_message(store.scan_skills(), set())["content"])
+    content = str(pipeline._build_runtime_context_message(store.scan_skills(), set())["content"])
     assert "可挂载的外部能力" not in content
     assert "mount_server" not in content
 
@@ -960,12 +979,12 @@ def test_system_prompt_skill_requires_mcp_annotation(tmp_path: Path):
     _write_skill_with_mcp(tmp_path, "cal-skill", "calendar")
     store = DriftStateStore(tmp_path)
     shared = _build_shared_tools_with_mcp("calendar")
-    runner = DriftRunner(
+    pipeline = _make_drift_pipeline(
         store=store,
         tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
     )
     content = str(
-        runner._build_runtime_context_message(
+        pipeline._build_runtime_context_message(
             store.scan_skills(), shared.get_mcp_server_names()
         )["content"]
     )
