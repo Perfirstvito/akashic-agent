@@ -741,28 +741,41 @@ class FeishuChannel:
         content: str,
         reply_to: str | None = None,
     ) -> Any:
-        """发送原始消息（不走重试）"""
+        """发送原始消息（不走重试）。有 reply_to 时走 Reply 端点，否则走 Create 端点。"""
         token = await self._get_access_token()
-        payload: dict[str, Any] = {
-            "receive_id": chat_id,
-            "msg_type": msg_type,
-            "content": content,
-        }
-        params: dict[str, Any] = {"receive_id_type": "chat_id"}
 
         if reply_to:
-            payload["root_id"] = reply_to
-            params["reply_to_message_id"] = reply_to
+            # Reply 端点: POST /im/v1/messages/{message_id}/reply
+            payload: dict[str, Any] = {
+                "content": content,
+                "msg_type": msg_type,
+            }
+            url = f"{_FEISHU_API_BASE}/open-apis/im/v1/messages/{reply_to}/reply"
+            resp = await self._http.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+        else:
+            # Create 端点: POST /im/v1/messages
+            payload = {
+                "receive_id": chat_id,
+                "msg_type": msg_type,
+                "content": content,
+            }
+            resp = await self._http.post(
+                f"{_FEISHU_API_BASE}/open-apis/im/v1/messages",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                params={"receive_id_type": "chat_id"},
+                json=payload,
+            )
 
-        resp = await self._http.post(
-            f"{_FEISHU_API_BASE}/open-apis/im/v1/messages",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            params=params,
-        )
         resp.raise_for_status()
         data = resp.json()
         logger.debug("[feishu] 发送消息成功 chat_id=%s msg_type=%s", chat_id, msg_type)
@@ -866,26 +879,56 @@ class FeishuChannel:
             return None
 
     async def _send_card_message(self, chat_id: str, card_id: str, reply_to: str | None = None) -> Any:
-        """POST /im/v1/messages — 发送卡片消息"""
+        """发送卡片消息。有 reply_to 时走 Reply 端点（显示回复横条），否则走 Create 端点。"""
         token = await self._get_access_token()
         content = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
-        payload: dict[str, Any] = {
-            "receive_id": chat_id,
-            "msg_type": "interactive",
-            "content": content,
-        }
-        params: dict[str, Any] = {"receive_id_type": "chat_id"}
+
         if reply_to:
-            payload["root_id"] = reply_to
-        resp = await self._http.post(
-            f"{_FEISHU_API_BASE}/open-apis/im/v1/messages",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            params=params,
-            json=payload,
-        )
+            # Reply 端点: POST /im/v1/messages/{message_id}/reply
+            # 不传 receive_id/receive_id_type，消息自动挂在被回复消息的会话下
+            payload: dict[str, Any] = {
+                "content": content,
+                "msg_type": "interactive",
+            }
+            url = f"{_FEISHU_API_BASE}/open-apis/im/v1/messages/{reply_to}/reply"
+            resp = await self._http.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+        else:
+            # Create 端点: POST /im/v1/messages
+            payload = {
+                "receive_id": chat_id,
+                "msg_type": "interactive",
+                "content": content,
+            }
+            resp = await self._http.post(
+                f"{_FEISHU_API_BASE}/open-apis/im/v1/messages",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                params={"receive_id_type": "chat_id"},
+                json=payload,
+            )
+
+        if resp.status_code != 200:
+            logger.warning(
+                "[feishu] 发送卡片消息失败 status=%d reply_to=%s body=%s",
+                resp.status_code, reply_to, resp.text[:500],
+            )
+        else:
+            data = resp.json()
+            code = data.get("code", 0)
+            if code != 0:
+                logger.warning(
+                    "[feishu] 发送卡片消息 API 错误 code=%s msg=%s reply_to=%s",
+                    code, data.get("msg", ""), reply_to,
+                )
         return resp
 
     async def _update_element_content(self, card_id: str, element_id: str, content: str, seq: int) -> bool:
