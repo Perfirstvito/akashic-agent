@@ -1003,13 +1003,14 @@ class FeishuChannel:
 
         tool_block = "\n".join(tool_lines)
 
-        # finalize 模式
+        # finalize 模式：工具链用引用块弱化视觉，回复单独展示
         if finalize:
             if tool_block and reply:
-                return tool_block + "\n\n───\n\n" + reply
+                quoted_tools = "\n".join("> " + line for line in tool_block.split("\n"))
+                return quoted_tools + "\n\n" + reply
             return reply or tool_block or "—"
 
-        # 流式模式
+        # 流式模式（完全不动）
         if tool_block and reply:
             return tool_block + "\n\n───\n\n" + reply
         if tool_block:
