@@ -105,10 +105,10 @@ async def create_runtime(config_path: Path, workspace: Path) -> BenchmarkRuntime
         model=light_model,
     )
     keep_count = max(1, config.memory_window // 2)
+    markdown_store = core.memory_runtime.markdown.store
     consolidation = ConsolidationService(
-        memory_port=core.memory_runtime.port,
-        profile_maint=getattr(core.memory_runtime, "profile_maint", None)
-        or core.memory_runtime.port,
+        memory_port=core.memory_runtime.engine,
+        profile_maint=markdown_store,
         provider=core.provider,
         model=config.model,
         keep_count=keep_count,

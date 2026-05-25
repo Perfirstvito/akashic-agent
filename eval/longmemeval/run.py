@@ -88,7 +88,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _make_progress(console: Console) -> Progress:
     return Progress(
-        SpinnerColumn(),
         TextColumn("[bold]{task.description}"),
         BarColumn(bar_width=28),
         MofNCompleteColumn(),
@@ -104,11 +103,11 @@ def _make_progress(console: Console) -> Progress:
 def _judge_str(jc) -> str:
     if jc is None:
         return "—"
-    return "✅" if jc else "❌"
+    return "PASS" if jc else "FAIL"
 
 
 def _f1_str(f1: float) -> str:
-    icon = "✅" if f1 >= 0.8 else ("⚠" if f1 >= 0.3 else "✗")
+    icon = "P" if f1 >= 0.8 else ("W" if f1 >= 0.3 else "X")
     return f"{icon} {f1:.2f}"
 
 
@@ -389,7 +388,9 @@ async def _run(args: argparse.Namespace) -> None:
     base_workspace.mkdir(parents=True, exist_ok=True)
 
     bench_config = load_config(args.config)
-    judge_model = bench_config.model
+    # Use the fast/chat model for judging — reasoning models (deepseek-v4-flash)
+    # prefix their answer with chain-of-thought, breaking the yes/no check.
+    judge_model = bench_config.light_model or bench_config.model
 
     console = Console()
     console.print(Rule(f"[bold]LongMemEval[/]  {len(instances)} instances  workers={args.workers}"))
