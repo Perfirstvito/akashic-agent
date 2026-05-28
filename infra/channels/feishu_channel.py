@@ -277,6 +277,143 @@ class FeishuChannel:
             logger.warning("[feishu] 删除 reaction 失败: %s", e)
             return False
 
+    # ── 媒体资源下载 ──────────────────────────────────────────────────────────
+
+    def _media_cache_dir(self) -> Path:
+        p = Path.home() / ".akashic" / "workspace" / "media_cache"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    async def _download_image_resource(
+        self, message_id: str, image_key: str
+    ) -> str | None:
+        """下载飞书消息中的图片到本地缓存，返回本地路径"""
+        try:
+            token = await self._get_access_token()
+            resp = await self._http.get(
+                f"{_FEISHU_API_BASE}/open-apis/im/v1/messages/{message_id}/resources/{image_key}",
+                params={"type": "image"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "[feishu] 下载图片失败 status=%d image_key=%s: %s",
+                    resp.status_code, image_key, resp.text[:200],
+                )
+                return None
+
+            content_type = resp.headers.get("content-type", "")
+            ext = self._guess_image_ext(content_type)
+            local_path = self._media_cache_dir() / f"{image_key}{ext}"
+            local_path.write_bytes(resp.content)
+            logger.debug(
+                "[feishu] 图片已缓存 image_key=%s -> %s (%d bytes)",
+                image_key, local_path.name, len(resp.content),
+            )
+            return str(local_path)
+        except Exception as e:
+            logger.warning("[feishu] 下载图片异常 image_key=%s: %s", image_key, e)
+            return None
+
+    @staticmethod
+    def _guess_image_ext(content_type: str) -> str:
+        ct = (content_type or "").split(";")[0].strip().lower()
+        mapping = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+            "image/bmp": ".bmp",
+        }
+        return mapping.get(ct, ".jpg")
+
+    # ── 文件上传（发送用） ────────────────────────────────────────────────────
+
+    async def _upload_image(self, image_path: str) -> str | None:
+        """上传图片到飞书，返回 image_key"""
+        import io
+
+        p = Path(image_path)
+        if not p.is_file():
+            logger.warning("[feishu] 图片文件不存在: %s", image_path)
+            return None
+
+        token = await self._get_access_token()
+        content = p.read_bytes()
+
+        # httpx multipart: 直接用 files 参数
+        resp = await self._http.post(
+            f"{_FEISHU_API_BASE}/open-apis/im/v1/images",
+            headers={"Authorization": f"Bearer {token}"},
+            data={"image_type": "message"},
+            files={"image": (p.name, io.BytesIO(content), self._guess_mime(p))},
+        )
+        if resp.status_code != 200:
+            logger.warning("[feishu] 上传图片失败 status=%d: %s", resp.status_code, resp.text[:200])
+            return None
+        data = resp.json()
+        code = data.get("code", -1)
+        if code != 0:
+            logger.warning("[feishu] 上传图片 API 错误 code=%s msg=%s", code, data.get("msg", ""))
+            return None
+        image_key = (data.get("data") or {}).get("image_key")
+        if image_key:
+            logger.debug("[feishu] 图片上传成功 image_key=%s", image_key)
+        return image_key
+
+    async def _upload_file(self, file_path: str, file_name: str | None = None) -> str | None:
+        """上传文件到飞书，返回 file_key"""
+        import io
+
+        p = Path(file_path)
+        if not p.is_file():
+            logger.warning("[feishu] 文件不存在: %s", file_path)
+            return None
+
+        name = file_name or p.name
+        ext = p.suffix.lower()
+        # 飞书 file_type: pdf/doc/xls/ppt/stream（通用）
+        doc_types = {
+            ".pdf": "pdf", ".doc": "doc", ".docx": "doc",
+            ".xls": "xls", ".xlsx": "xls",
+            ".ppt": "ppt", ".pptx": "ppt",
+        }
+        file_type = doc_types.get(ext, "stream")
+
+        token = await self._get_access_token()
+        content = p.read_bytes()
+
+        resp = await self._http.post(
+            f"{_FEISHU_API_BASE}/open-apis/im/v1/files",
+            headers={"Authorization": f"Bearer {token}"},
+            data={"file_type": file_type, "file_name": name},
+            files={"file": (name, io.BytesIO(content), self._guess_mime(p))},
+        )
+        if resp.status_code != 200:
+            logger.warning("[feishu] 上传文件失败 status=%d: %s", resp.status_code, resp.text[:200])
+            return None
+        data = resp.json()
+        code = data.get("code", -1)
+        if code != 0:
+            logger.warning("[feishu] 上传文件 API 错误 code=%s msg=%s", code, data.get("msg", ""))
+            return None
+        file_key = (data.get("data") or {}).get("file_key")
+        if file_key:
+            logger.debug("[feishu] 文件上传成功 file_key=%s", file_key)
+        return file_key
+
+    @staticmethod
+    def _guess_mime(p: Path) -> str:
+        ext = p.suffix.lower()
+        return {
+            ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".png": "image/png", ".gif": "image/gif",
+            ".webp": "image/webp", ".bmp": "image/bmp",
+            ".pdf": "application/pdf",
+            ".mp4": "video/mp4", ".mov": "video/quicktime",
+            ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
+        }.get(ext, "application/octet-stream")
+
     # ── Markdown → 飞书 Post ────────────────────────────────────────────────
 
     def _build_markdown_post_payload(self, content: str) -> str:
@@ -499,7 +636,7 @@ class FeishuChannel:
         sender_id = str(sender.get("sender_id", {}).get("open_id") or "")
         message_id = str(message.get("message_id") or "")
         content_raw = message.get("content", "{}")
-        msg_type = message.get("msg_type", "text")
+        msg_type = message.get("message_type", "text")
 
         # 解析 content（JSON 字符串）
         try:
@@ -540,12 +677,18 @@ class FeishuChannel:
             f"sender_id={sender_id} msg_type={msg_type} content={text[:50]!r}..."
         )
 
-        # 如果是图片/文件/音频类型，收集 media 信息
+        # 如果是图片类型，下载到本地缓存（Core 管线会自动 base64 编码发送给 VL 模型）
         media: list[str] = []
         if msg_type == "image":
             image_key = content.get("image_key") or ""
             if image_key:
-                media.append(f"image:{image_key}")
+                logger.info("[feishu] 收到图片，开始下载 image_key=%s", image_key)
+                local_path = await self._download_image_resource(message_id, image_key)
+                if local_path:
+                    media.append(local_path)
+                    logger.info("[feishu] 图片已下载 -> %s", local_path)
+                else:
+                    logger.warning("[feishu] 图片下载失败 image_key=%s", image_key)
 
         # 追踪 session → message_id（用于 reaction 反馈）
         session_key = f"{_CHANNEL}:{chat_id}"
@@ -838,10 +981,6 @@ class FeishuChannel:
                     "print_step": {"default": 1},
                     "print_strategy": "fast",
                 },
-            },
-            "header": {
-                "title": {"tag": "plain_text", "content": "🤖 Akashic"},
-                "template": "blue",
             },
             "body": {
                 "elements": elements,
@@ -1198,6 +1337,57 @@ class FeishuChannel:
         await self._send_with_retry(
             chat_id=chat_id,
             msg_type=msg_type,
+            content_payload=content_payload,
+        )
+
+    async def send_image(self, chat_id: str, image_path: str) -> None:
+        """发送图片（公共接口）。支持本地路径或 URL"""
+        import io
+        import tempfile
+
+        # URL 图片：先下载到临时文件
+        if image_path.startswith(("http://", "https://")):
+            try:
+                resp = await self._http.get(image_path)
+                resp.raise_for_status()
+                ct = resp.headers.get("content-type", "")
+                ext = self._guess_image_ext(ct)
+                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                    tmp.write(resp.content)
+                    local_path = tmp.name
+            except Exception as e:
+                logger.warning("[feishu] 下载远程图片失败: %s", e)
+                raise
+        else:
+            local_path = image_path
+
+        image_key = await self._upload_image(local_path)
+        if not image_key:
+            raise RuntimeError("图片上传失败")
+
+        content_payload = json.dumps({"image_key": image_key}, ensure_ascii=False)
+        await self._send_with_retry(
+            chat_id=chat_id,
+            msg_type="image",
+            content_payload=content_payload,
+        )
+
+    async def send_file(
+        self, chat_id: str, file_path: str, file_name: str | None = None
+    ) -> None:
+        """发送文件（公共接口）。支持 PDF、Word、Excel、PPT 等"""
+        p = Path(file_path)
+        if not p.is_file():
+            raise FileNotFoundError(f"文件不存在: {file_path}")
+
+        file_key = await self._upload_file(file_path, file_name)
+        if not file_key:
+            raise RuntimeError("文件上传失败")
+
+        content_payload = json.dumps({"file_key": file_key}, ensure_ascii=False)
+        await self._send_with_retry(
+            chat_id=chat_id,
+            msg_type="file",
             content_payload=content_payload,
         )
 

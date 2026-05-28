@@ -20,7 +20,10 @@
       "WebFetch(domain:open.feishu.cn)",
       "Bash(grep -v \"^$\")",
       "Bash(pip show:*)",
-      "Bash(pip list:*)"
+      "Bash(pip list:*)",
+      "Bash(tasklist)",
+      "Bash(wmic process:*)",
+      "Bash(netstat -ano)"
     ]
   }
 }

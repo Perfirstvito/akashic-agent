@@ -118,6 +118,8 @@ async def start_channels(
         push_tool.register_channel(
             "feishu",
             text=feishu_channel.send,
+            image=feishu_channel.send_image,
+            file=feishu_channel.send_file,
         )
         print(f"飞书 Bot 已启动  |  AppID: {feishu.app_id}")
 
