@@ -644,6 +644,24 @@ class FeishuChannel:
         except Exception:
             content = {}
 
+        # ── 跳过延迟重推的老消息（飞书 WebSocket 断连期间的消息可能被延迟推送）──
+        create_time_ms = message.get("create_time", "")
+        if create_time_ms:
+            try:
+                age_s = time.time() - int(create_time_ms) / 1000
+                _STALE_MESSAGE_MAX_AGE_S = 300  # 超过 5 分钟的消息视为过期
+                if age_s > _STALE_MESSAGE_MAX_AGE_S:
+                    logger.info(
+                        "[feishu] 跳过过期消息 message_id=%s age=%.0fs msg_type=%s",
+                        message_id, age_s, msg_type,
+                    )
+                    # 标记为已见，避免后续重推
+                    if message_id:
+                        self._mark_seen(message_id)
+                    return
+            except (ValueError, TypeError):
+                pass
+
         # 获取文本内容（支持 post 等富文本消息）
         text = self._extract_text_content(msg_type, content)
         if not text and msg_type == "text":
