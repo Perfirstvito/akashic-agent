@@ -144,6 +144,12 @@ def _align_to_user_boundary(messages: list[dict[str, Any]]) -> list[dict[str, An
     return []
 
 
+def _is_replay_boundary(message: dict[str, Any]) -> bool:
+    return message.get("role") == "user" or (
+        message.get("role") == "assistant" and message.get("proactive")
+    )
+
+
 def _safe_filename(key: str) -> str:
     """Convert a session key to a safe filename."""
     return re.sub(r"[^\w\-]", "_", key)
@@ -159,6 +165,7 @@ class Session:
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
     last_consolidated: int = 0
+    context_start: int = 0
     consolidation_requested: bool = False
 
     def add_message(
@@ -186,28 +193,25 @@ class Session:
         if start_index is not None:
             if max_messages <= 0:
                 return []
-            start = max(0, int(start_index))
+            base_start = max(0, int(start_index))
+            start = max(base_start, len(self.messages) - max_messages)
             if start >= len(self.messages):
                 return []
-            # 向前回退到最近的 user 边界（保留完整 turn）
-            while (
-                start > 0
-                and self.messages[start].get("role") != "user"
-                and not (
-                    self.messages[start].get("role") == "assistant"
-                    and self.messages[start].get("proactive")
-                )
-            ):
-                start -= 1
+            if start > base_start:
+                # 窗口裁剪不能向前扩张，否则历史会再次越过上限。
+                while start < len(self.messages) and not _is_replay_boundary(
+                    self.messages[start]
+                ):
+                    start += 1
+            else:
+                # consolidation 游标可能落在 turn 中间，保留完整 turn。
+                while start > 0 and not _is_replay_boundary(self.messages[start]):
+                    start -= 1
+            if start >= len(self.messages):
+                return []
             # start=0 但仍非合法边界时，向后找第一个 user 或 proactive assistant。
             messages = self.messages[start:]
-            if messages and not (
-                messages[0].get("role") == "user"
-                or (
-                    messages[0].get("role") == "assistant"
-                    and messages[0].get("proactive")
-                )
-            ):
+            if messages and not _is_replay_boundary(messages[0]):
                 messages = _align_to_user_boundary(messages)
             if not messages:
                 return []
@@ -288,10 +292,41 @@ class Session:
 
         return out
 
+    def advance_context_start(self, max_history_messages: int) -> int:
+        """Advance the model replay cursor without deleting auditable raw messages."""
+        current = max(0, min(int(self.context_start), len(self.messages)))
+        floor = max(current, min(int(self.last_consolidated), len(self.messages)))
+        target = max(0, int(max_history_messages))
+        if target <= 0:
+            self.context_start = len(self.messages)
+            return self.context_start
+
+        full_tail = self.get_history(
+            max_messages=max(1, len(self.messages)),
+            start_index=floor,
+        )
+        if len(full_tail) <= target:
+            return self.context_start
+
+        for start in range(floor, len(self.messages)):
+            if not _is_replay_boundary(self.messages[start]):
+                continue
+            history = self.get_history(
+                max_messages=max(1, len(self.messages)),
+                start_index=start,
+            )
+            if len(history) <= target:
+                self.context_start = start
+                return self.context_start
+
+        self.context_start = len(self.messages)
+        return self.context_start
+
     def clear(self) -> None:
         self.messages = []
         self.updated_at = datetime.now()
         self.last_consolidated = 0
+        self.context_start = 0
         self.consolidation_requested = False
 
 
@@ -345,6 +380,7 @@ class SessionManager:
         )
         metadata = meta.get("metadata", {}) if meta else {}
         last_consolidated = int(meta.get("last_consolidated", 0)) if meta else 0
+        context_start = int(meta.get("context_start", 0)) if meta else 0
         return Session(
             key=key,
             messages=messages,
@@ -352,6 +388,7 @@ class SessionManager:
             updated_at=updated_at,
             metadata=metadata,
             last_consolidated=last_consolidated,
+            context_start=context_start,
         )
 
     def _ensure_session_meta(self, session: Session) -> None:
@@ -361,6 +398,7 @@ class SessionManager:
             updated_at=session.updated_at.isoformat(),
             last_consolidated=session.last_consolidated,
             metadata=session.metadata,
+            context_start=session.context_start,
         )
 
     def _extract_extra(self, msg: dict[str, Any]) -> dict[str, Any]:
@@ -417,6 +455,7 @@ class SessionManager:
             updated_at=session.updated_at.isoformat(),
             last_consolidated=session.last_consolidated,
             metadata=session.metadata,
+            context_start=session.context_start,
         )
         self._cache[session.key] = session
 
@@ -440,6 +479,7 @@ class SessionManager:
                 updated_at=session.updated_at.isoformat(),
                 last_consolidated=session.last_consolidated,
                 metadata=session.metadata,
+                context_start=session.context_start,
             )
             self._cache[session.key] = session
 

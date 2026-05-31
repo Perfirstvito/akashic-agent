@@ -13,6 +13,7 @@ from agent.core.types import ContextRequest
 from agent.core.types import ReasonerResult
 from agent.looping.ports import LLMConfig
 from agent.provider import ContentSafetyError, ContextLengthError
+from session.manager import Session
 
 
 def _stub_turn_injection_context(
@@ -152,3 +153,64 @@ def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history(
     assert calls[0]["disabled_sections"] == set()
     assert calls[1]["history_len"] == 6
     assert calls[1]["disabled_sections"] == {"skills_catalog"}
+
+
+def test_reasoner_run_turn_persists_replay_cursor_without_deleting_raw_messages():
+    reasoner = _make_reasoner(
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+    reasoner.run = AsyncMock(
+        side_effect=[
+            ContextLengthError("long"),
+            ContextLengthError("long"),
+            ContextLengthError("long"),
+            ContextLengthError("long"),
+            ContextLengthError("long"),
+            ReasonerResult(
+                reply="ok",
+                metadata={"tools_used": [], "tool_chain": []},
+            ),
+        ]
+    )
+    session = Session("s:1")
+    for i in range(6):
+        session.add_message("user", str(i))
+
+    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=session))
+
+    assert result.reply == "ok"
+    assert [message["content"] for message in session.messages] == [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+    ]
+    assert session.context_start == 3
+    assert reasoner._session_manager.save_async.await_count == 1
+
+
+def test_reasoner_run_turn_does_not_advance_cursor_for_section_only_trim():
+    reasoner = _make_reasoner(
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+    reasoner.run = AsyncMock(
+        side_effect=[
+            ContextLengthError("long"),
+            ReasonerResult(
+                reply="ok",
+                metadata={"tools_used": [], "tool_chain": []},
+            ),
+        ]
+    )
+    session = Session("s:1")
+    for i in range(6):
+        session.add_message("user", str(i))
+
+    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=session))
+
+    assert result.reply == "ok"
+    assert session.context_start == 0

@@ -363,6 +363,36 @@ def _seed_workspace(tmp_path) -> None:
     conn.close()
 
 
+def test_session_store_migrates_context_start_column(tmp_path) -> None:
+    db_path = tmp_path / "sessions.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE sessions (
+            key               TEXT PRIMARY KEY,
+            created_at        TEXT NOT NULL,
+            updated_at        TEXT NOT NULL,
+            last_consolidated INTEGER NOT NULL DEFAULT 0,
+            metadata          TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
+        VALUES ('cli:legacy', '2026-01-01', '2026-01-01', 0, '{}')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = SessionStore(db_path)
+    try:
+        assert store.get_session_meta("cli:legacy")["context_start"] == 0
+    finally:
+        store.close()
+
+
 def test_list_sessions_with_filters(tmp_path) -> None:
     _seed_workspace(tmp_path)
     with TestClient(create_dashboard_app(tmp_path)) as client:
@@ -389,11 +419,16 @@ def test_update_and_delete_session(tmp_path) -> None:
     with TestClient(create_dashboard_app(tmp_path)) as client:
         patch_resp = client.patch(
             "/api/dashboard/sessions/telegram:100",
-            json={"metadata": {"title": "patched"}, "last_consolidated": 9},
+            json={
+                "metadata": {"title": "patched"},
+                "last_consolidated": 9,
+                "context_start": 1,
+            },
         )
         assert patch_resp.status_code == 200
         assert patch_resp.json()["metadata"]["title"] == "patched"
         assert patch_resp.json()["last_consolidated"] == 9
+        assert patch_resp.json()["context_start"] == 1
 
         delete_resp = client.delete("/api/dashboard/sessions/telegram:100")
         assert delete_resp.status_code == 200
@@ -547,6 +582,25 @@ def test_list_update_and_batch_delete_messages(tmp_path) -> None:
         )
         assert remain_resp.status_code == 200
         assert remain_resp.json()["total"] == 1
+
+
+def test_batch_delete_messages_shifts_session_cursors(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    store = SessionStore(tmp_path / "sessions.db")
+    store.update_session("telegram:100", context_start=2)
+    store.close()
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        batch_resp = client.post(
+            "/api/dashboard/messages/batch-delete",
+            json={"ids": ["telegram:100:0"]},
+        )
+        meta_resp = client.get("/api/dashboard/sessions/telegram:100")
+
+    assert batch_resp.status_code == 200
+    assert meta_resp.status_code == 200
+    assert meta_resp.json()["last_consolidated"] == 1
+    assert meta_resp.json()["context_start"] == 1
 
 
 def test_list_memory_items_with_filters(tmp_path) -> None:

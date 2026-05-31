@@ -74,6 +74,7 @@ def _install_dashboard_access_log_filter() -> None:
 class SessionUpdatePayload(BaseModel):
     metadata: dict[str, Any] | None = None
     last_consolidated: int | None = None
+    context_start: int | None = None
     last_user_at: str | None = None
     last_proactive_at: str | None = None
 
@@ -958,6 +959,7 @@ def create_dashboard_app(
             session_key,
             metadata=payload.metadata,
             last_consolidated=payload.last_consolidated,
+            context_start=payload.context_start,
             last_user_at=payload.last_user_at,
             last_proactive_at=payload.last_proactive_at,
         )

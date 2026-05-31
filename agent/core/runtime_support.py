@@ -105,6 +105,7 @@ class SessionLike(Protocol):
     messages: list[dict]
     metadata: dict[str, object]
     last_consolidated: int
+    context_start: int
 
     def get_history(
         self,
@@ -113,6 +114,7 @@ class SessionLike(Protocol):
         start_index: int | None = None,
     ) -> list[dict]: ...
     def add_message(self, role: str, content: str, media=None, **kwargs) -> None: ...
+    def advance_context_start(self, max_history_messages: int) -> int: ...
 
 @dataclass
 class TurnRunResult:

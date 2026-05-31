@@ -115,3 +115,20 @@ def test_undo_does_not_reuse_deleted_tail_message_ids(tmp_path: Path):
     manager.save(session)
 
     assert [m["id"] for m in session.messages] == ["cli:1:3", "cli:1:4"]
+
+
+def test_undo_shifts_persisted_context_start_when_deleted_turn_overlaps_cursor(
+    tmp_path: Path,
+):
+    manager = _saved_manager(tmp_path, turns=3)
+    session = manager.get_or_create("cli:1")
+    session.context_start = 7
+    manager.save(session)
+
+    result = _run(_undo_last_turn(manager, "cli:1"))
+
+    assert result is not None
+    assert result.deleted_ids == ["cli:1:6", "cli:1:7", "cli:1:8"]
+    assert session.context_start == 6
+    manager.invalidate(session.key)
+    assert manager.get_or_create("cli:1").context_start == 6

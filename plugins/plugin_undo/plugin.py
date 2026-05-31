@@ -162,16 +162,25 @@ async def _undo_last_turn(
         deleted_before = sum(1 for i in delete_indices if i < rollback_index)
         new_last = max(0, rollback_index - deleted_before)
         new_last = min(new_last, len(remaining))
+        old_context_start = max(0, int(getattr(session, "context_start", 0)))
+        new_context_start = max(
+            0,
+            old_context_start
+            - sum(1 for i in delete_indices if i < old_context_start),
+        )
+        new_context_start = min(new_context_start, len(remaining))
         deleted_count = session_manager._store.delete_session_messages_and_update_cursor(
             session.key,
             ids=deleted_ids,
             last_consolidated=new_last,
+            context_start=new_context_start,
         )
         if deleted_count != len(deleted_ids):
             session_manager.invalidate(session.key)
             return None
         session.messages = remaining
         session.last_consolidated = new_last
+        session.context_start = new_context_start
         session.updated_at = datetime.now()
         session_manager._cache[session.key] = session
         return _UndoSessionResult(

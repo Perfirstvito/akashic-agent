@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.prompting import is_context_frame
+from agent.core.passive_turn import get_history_since_consolidated
 from agent.provider import LLMResponse
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import (
@@ -214,7 +215,7 @@ def test_session_get_history_rewinds_consolidated_index_to_user_boundary():
     assert history[0] == {"role": "user", "content": "hello"}
 
 
-def test_session_get_history_keeps_full_consolidated_tail():
+def test_session_get_history_caps_unconsolidated_tail():
     session = Session("cli:1")
     for i in range(5):
         session.add_message("user", f"u{i}")
@@ -223,11 +224,65 @@ def test_session_get_history_keeps_full_consolidated_tail():
 
     assert session.consolidation_requested is False
     assert history == [
-        {"role": "user", "content": "u0"},
-        {"role": "user", "content": "u1"},
-        {"role": "user", "content": "u2"},
         {"role": "user", "content": "u3"},
         {"role": "user", "content": "u4"},
+    ]
+
+
+def test_session_manager_persists_context_start_without_deleting_raw_messages(
+    tmp_path: Path,
+):
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("cli:1")
+    for i in range(5):
+        session.add_message("user", f"u{i}")
+    manager.save(session)
+
+    assert session.advance_context_start(2) == 3
+    manager.save(session)
+    manager.invalidate(session.key)
+
+    reloaded = manager.get_or_create("cli:1")
+    assert reloaded.context_start == 3
+    assert [m["content"] for m in reloaded.messages] == [
+        "u0",
+        "u1",
+        "u2",
+        "u3",
+        "u4",
+    ]
+    assert manager._store.count_messages(session.key) == 5
+    assert get_history_since_consolidated(reloaded, 20) == [
+        {"role": "user", "content": "u3"},
+        {"role": "user", "content": "u4"},
+    ]
+
+
+def test_advance_context_start_counts_expanded_tool_history():
+    session = Session("cli:1")
+    session.add_message("user", "old")
+    session.add_message("assistant", "old reply")
+    session.messages[-1]["tool_chain"] = [
+        {
+            "text": "",
+            "calls": [
+                {
+                    "call_id": "call-1",
+                    "name": "dummy",
+                    "arguments": {},
+                    "result": "ok",
+                }
+            ],
+        }
+    ]
+    session.add_message("user", "new")
+    session.add_message("assistant", "new reply")
+
+    assert len(session.get_history(max_messages=10, start_index=0)) == 6
+    assert session.advance_context_start(2) == 2
+    assert get_history_since_consolidated(session, 10) == [
+        {"role": "user", "content": "new"},
+        {"role": "assistant", "content": "new reply"},
     ]
 
 

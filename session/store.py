@@ -35,6 +35,7 @@ class SessionStore:
                     created_at        TEXT NOT NULL,
                     updated_at        TEXT NOT NULL,
                     last_consolidated INTEGER NOT NULL DEFAULT 0,
+                    context_start     INTEGER NOT NULL DEFAULT 0,
                     metadata          TEXT
                 )
                 """)
@@ -66,6 +67,10 @@ class SessionStore:
         if "next_seq" not in existing:
             self._conn.execute(
                 "ALTER TABLE sessions ADD COLUMN next_seq INTEGER NOT NULL DEFAULT 0"
+            )
+        if "context_start" not in existing:
+            self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN context_start INTEGER NOT NULL DEFAULT 0"
             )
 
     def _ensure_next_seq_values(self) -> None:
@@ -163,19 +168,30 @@ class SessionStore:
         updated_at: str,
         last_consolidated: int,
         metadata: dict[str, Any],
+        context_start: int = 0,
     ) -> None:
         payload = json.dumps(metadata or {}, ensure_ascii=False)
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO sessions (
+                    key, created_at, updated_at, last_consolidated, context_start, metadata
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET
                     updated_at = excluded.updated_at,
                     last_consolidated = excluded.last_consolidated,
+                    context_start = excluded.context_start,
                     metadata = excluded.metadata
                 """,
-                (key, created_at, updated_at, int(last_consolidated), payload),
+                (
+                    key,
+                    created_at,
+                    updated_at,
+                    int(last_consolidated),
+                    max(0, int(context_start)),
+                    payload,
+                ),
             )
             self._conn.commit()
 
@@ -195,7 +211,12 @@ class SessionStore:
     def get_session_meta(self, key: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT key, created_at, updated_at, last_consolidated, metadata, last_user_at, last_proactive_at FROM sessions WHERE key = ?",
+                """
+                SELECT key, created_at, updated_at, last_consolidated,
+                       context_start, metadata, last_user_at, last_proactive_at
+                FROM sessions
+                WHERE key = ?
+                """,
                 (key,),
             ).fetchone()
         if row is None:
@@ -205,6 +226,7 @@ class SessionStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "last_consolidated": int(row["last_consolidated"] or 0),
+            "context_start": max(0, int(row["context_start"] or 0)),
             "metadata": json.loads(row["metadata"] or "{}"),
             "last_user_at": row["last_user_at"],
             "last_proactive_at": row["last_proactive_at"],
@@ -290,6 +312,7 @@ class SessionStore:
                 s.created_at,
                 s.updated_at,
                 s.last_consolidated,
+                s.context_start,
                 s.metadata,
                 s.last_user_at,
                 s.last_proactive_at,
@@ -317,6 +340,7 @@ class SessionStore:
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
                 "last_consolidated": int(row["last_consolidated"] or 0),
+                "context_start": max(0, int(row["context_start"] or 0)),
                 "metadata": json.loads(row["metadata"] or "{}"),
                 "last_user_at": row["last_user_at"],
                 "last_proactive_at": row["last_proactive_at"],
@@ -331,6 +355,7 @@ class SessionStore:
         key: str,
         metadata: dict[str, Any] | None = None,
         last_consolidated: int = 0,
+        context_start: int = 0,
         last_user_at: str | None = None,
         last_proactive_at: str | None = None,
     ) -> dict[str, Any]:
@@ -344,17 +369,19 @@ class SessionStore:
                     created_at,
                     updated_at,
                     last_consolidated,
+                    context_start,
                     metadata,
                     last_user_at,
                     last_proactive_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     key,
                     now,
                     now,
                     int(last_consolidated),
+                    max(0, int(context_start)),
                     payload,
                     last_user_at,
                     last_proactive_at,
@@ -372,6 +399,7 @@ class SessionStore:
         *,
         metadata: dict[str, Any] | None = None,
         last_consolidated: int | None = None,
+        context_start: int | None = None,
         last_user_at: str | None = None,
         last_proactive_at: str | None = None,
     ) -> dict[str, Any] | None:
@@ -383,6 +411,9 @@ class SessionStore:
         if last_consolidated is not None:
             set_parts.append("last_consolidated = ?")
             params.append(int(last_consolidated))
+        if context_start is not None:
+            set_parts.append("context_start = ?")
+            params.append(max(0, int(context_start)))
         if last_user_at is not None:
             set_parts.append("last_user_at = ?")
             params.append(last_user_at)
@@ -759,12 +790,13 @@ class SessionStore:
     def delete_message(self, message_id: str) -> bool:
         with self._lock:
             row = self._conn.execute(
-                "SELECT session_key FROM messages WHERE id = ?",
+                "SELECT session_key, seq FROM messages WHERE id = ?",
                 (message_id,),
             ).fetchone()
             if row is None:
                 return False
             session_key = str(row["session_key"])
+            self._shift_cursors_for_deleted_rows([row])
             cur = self._conn.execute(
                 "DELETE FROM messages WHERE id = ?",
                 (message_id,),
@@ -786,20 +818,66 @@ class SessionStore:
         now = datetime.now().astimezone().isoformat()
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT DISTINCT session_key FROM messages WHERE id IN ({placeholders})",
+                f"SELECT session_key, seq FROM messages WHERE id IN ({placeholders})",
                 tuple(clean_ids),
             ).fetchall()
+            self._shift_cursors_for_deleted_rows(rows)
             cur = self._conn.execute(
                 f"DELETE FROM messages WHERE id IN ({placeholders})",
                 tuple(clean_ids),
             )
-            for row in rows:
+            for session_key in {str(row["session_key"]) for row in rows}:
                 self._conn.execute(
                     "UPDATE sessions SET updated_at = ? WHERE key = ?",
-                    (now, str(row["session_key"])),
+                    (now, session_key),
                 )
             self._conn.commit()
         return int(cur.rowcount or 0)
+
+    def _shift_cursors_for_deleted_rows(self, rows: list[sqlite3.Row]) -> None:
+        by_session: dict[str, list[int]] = {}
+        for row in rows:
+            by_session.setdefault(str(row["session_key"]), []).append(int(row["seq"]))
+        for session_key, seqs in by_session.items():
+            meta = self._conn.execute(
+                """
+                SELECT last_consolidated, context_start
+                FROM sessions
+                WHERE key = ?
+                """,
+                (session_key,),
+            ).fetchone()
+            if meta is None:
+                continue
+            positions = [
+                int(
+                    self._conn.execute(
+                        """
+                        SELECT COUNT(1) AS c
+                        FROM messages
+                        WHERE session_key = ? AND seq < ?
+                        """,
+                        (session_key, seq),
+                    ).fetchone()["c"]
+                    or 0
+                )
+                for seq in seqs
+            ]
+            last_consolidated = max(0, int(meta["last_consolidated"] or 0))
+            context_start = max(0, int(meta["context_start"] or 0))
+            self._conn.execute(
+                """
+                UPDATE sessions
+                SET last_consolidated = ?,
+                    context_start = ?
+                WHERE key = ?
+                """,
+                (
+                    max(0, last_consolidated - sum(pos < last_consolidated for pos in positions)),
+                    max(0, context_start - sum(pos < context_start for pos in positions)),
+                    session_key,
+                ),
+            )
 
     def delete_session_messages_and_update_cursor(
         self,
@@ -807,6 +885,7 @@ class SessionStore:
         *,
         ids: list[str],
         last_consolidated: int,
+        context_start: int = 0,
     ) -> int:
         clean_ids = [
             str(message_id).strip() for message_id in ids if str(message_id).strip()
@@ -840,11 +919,19 @@ class SessionStore:
                     """
                     UPDATE sessions
                     SET last_consolidated = ?,
+                        context_start = ?,
                         updated_at = ?,
                         next_seq = CASE WHEN next_seq < ? THEN ? ELSE next_seq END
                     WHERE key = ?
                     """,
-                    (int(last_consolidated), now, next_seq, next_seq, session_key),
+                    (
+                        int(last_consolidated),
+                        max(0, int(context_start)),
+                        now,
+                        next_seq,
+                        next_seq,
+                        session_key,
+                    ),
                 )
                 self._conn.commit()
             except Exception:

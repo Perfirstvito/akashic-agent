@@ -838,16 +838,19 @@ class DefaultReasoner(Reasoner):
                     retry_trace["selected_plan"] = plan["name"]
                     retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
                     logger.warning(
-                        "重试成功 plan=%s window=%d disabled=%s，修剪 session 历史",
+                        "重试成功 plan=%s window=%d disabled=%s，保存上下文降级状态",
                         plan["name"],
                         window,
                         sorted(plan["disabled_sections"]),
                     )
-                    if window == 0:
-                        session.messages.clear()
-                    else:
-                        session.messages = session.messages[-window:]
-                    session.last_consolidated = 0
+                    if window < total_history:
+                        advance_context_start = getattr(
+                            session,
+                            "advance_context_start",
+                            None,
+                        )
+                        if callable(advance_context_start):
+                            advance_context_start(window)
                     await self._session_manager.save_async(cast(Any, session))
 
                 if self._tool_search_enabled and (tools_used or tools_unlocked):
@@ -1761,9 +1764,13 @@ def get_history_since_consolidated(
     memory_window: int,
 ) -> list[dict]:
     try:
+        start_index = max(
+            int(session.last_consolidated),
+            int(getattr(session, "context_start", 0)),
+        )
         return session.get_history(
             max_messages=memory_window,
-            start_index=session.last_consolidated,
+            start_index=start_index,
         )
     except TypeError:
         return session.get_history(max_messages=memory_window)
