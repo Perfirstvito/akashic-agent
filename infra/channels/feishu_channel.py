@@ -93,6 +93,19 @@ class _TokenCache:
     expires_at: float
 
 
+class FeishuSendError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: int | None = None,
+        response: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.response = response
+
+
 def _get_hermes_home() -> Path:
     """获取 hermes home 路径"""
     import os
@@ -837,6 +850,12 @@ class FeishuChannel:
             msg_type=msg_type,
             content_payload=content_payload,
             reply_to=reply_to,
+            fallback_msg_type="text" if msg_type == "post" else None,
+            fallback_content_payload=(
+                json.dumps({"text": msg.content}, ensure_ascii=False)
+                if msg_type == "post"
+                else None
+            ),
         )
 
     async def _send_with_retry(
@@ -847,8 +866,56 @@ class FeishuChannel:
         content_payload: str,
         reply_to: str | None = None,
         sent_message_id: str | None = None,
+        fallback_msg_type: str | None = None,
+        fallback_content_payload: str | None = None,
     ) -> None:
         """发送消息，带重试和 reply 回退机制"""
+        try:
+            await self._send_with_retry_once(
+                chat_id=chat_id,
+                msg_type=msg_type,
+                content_payload=content_payload,
+                reply_to=reply_to,
+            )
+            return
+        except Exception as primary_error:
+            if (
+                fallback_msg_type
+                and fallback_content_payload
+                and fallback_msg_type != msg_type
+            ):
+                logger.warning(
+                    "[feishu] %s 消息发送失败，降级为 %s 重试: %s",
+                    msg_type,
+                    fallback_msg_type,
+                    primary_error,
+                )
+                try:
+                    await self._send_with_retry_once(
+                        chat_id=chat_id,
+                        msg_type=fallback_msg_type,
+                        content_payload=fallback_content_payload,
+                        reply_to=None,
+                    )
+                    return
+                except Exception as fallback_error:
+                    raise FeishuSendError(
+                        "飞书消息发送失败，降级纯文本后仍失败",
+                        response={
+                            "primary_error": str(primary_error),
+                            "fallback_error": str(fallback_error),
+                        },
+                    ) from fallback_error
+            raise
+
+    async def _send_with_retry_once(
+        self,
+        *,
+        chat_id: str,
+        msg_type: str,
+        content_payload: str,
+        reply_to: str | None = None,
+    ) -> None:
         last_error: Exception | None = None
         effective_reply_to = reply_to
 
@@ -875,17 +942,22 @@ class FeishuChannel:
                             content=content_payload,
                             reply_to=None,
                         )
-                return
+                if self._response_succeeded(response):
+                    return
+                last_error = self._response_error(response)
             except Exception as exc:
                 last_error = exc
-                if attempt < _FEISHU_SEND_ATTEMPTS - 1:
-                    wait_seconds = 2 ** attempt
-                    logger.warning(
-                        "[feishu] 发送失败 (attempt %d/%d): %s，%ds 后重试",
-                        attempt + 1, _FEISHU_SEND_ATTEMPTS, exc, wait_seconds,
-                    )
-                    await asyncio.sleep(wait_seconds)
+            if attempt < _FEISHU_SEND_ATTEMPTS - 1:
+                wait_seconds = 2 ** attempt
+                logger.warning(
+                    "[feishu] 发送失败 (attempt %d/%d): %s，%ds 后重试",
+                    attempt + 1, _FEISHU_SEND_ATTEMPTS, last_error, wait_seconds,
+                )
+                await asyncio.sleep(wait_seconds)
         logger.error("[feishu] 发送消息失败: %s", last_error)
+        if last_error is not None:
+            raise last_error
+        raise FeishuSendError("飞书消息发送失败：无响应")
 
     def _response_succeeded(self, response: Any) -> bool:
         """检查飞书 API 响应是否成功"""
@@ -893,6 +965,16 @@ class FeishuChannel:
             return False
         code = getattr(response, "code", None)
         return code == 0
+
+    def _response_error(self, response: Any) -> FeishuSendError:
+        code = getattr(response, "code", None)
+        data = getattr(response, "data", None)
+        message = ""
+        if isinstance(data, dict):
+            message = str(data.get("msg") or data.get("message") or "")
+        if not message:
+            message = f"飞书 API 返回失败 code={code}"
+        return FeishuSendError(message, code=code, response=data)
 
     async def _send_raw_message(
         self,
@@ -1356,6 +1438,12 @@ class FeishuChannel:
             chat_id=chat_id,
             msg_type=msg_type,
             content_payload=content_payload,
+            fallback_msg_type="text" if msg_type == "post" else None,
+            fallback_content_payload=(
+                json.dumps({"text": content}, ensure_ascii=False)
+                if msg_type == "post"
+                else None
+            ),
         )
 
     async def send_image(self, chat_id: str, image_path: str) -> None:
