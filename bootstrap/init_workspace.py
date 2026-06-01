@@ -38,6 +38,8 @@ _DIRECTORIES: tuple[str, ...] = (
     "skills",
     "drift/skills",
     "mcp",
+    "proactive_rules/content",
+    "proactive_rules/subscriptions",
 )
 
 

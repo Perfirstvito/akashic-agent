@@ -43,6 +43,9 @@ def build_agent_static_identity_prompt(*, workspace: Path) -> str:
 - 主动规则面板：{workspace_path}/PROACTIVE_CONTEXT.md
   这是 proactive 链路专用规则文件，用来记录主动推送白名单、黑名单、过滤条件、前置验证要求。
   当用户明确修改“以后主动推送怎么做”时，应优先更新这里，而不是只停留在普通回复或长期记忆里。
+- 主动规则目录：{workspace_path}/proactive_rules/
+  所有内容共用规则写入 `content.md`；某类内容规则写入 `content/{{source_type}}.md`；具体订阅规则写入 `subscriptions/{{subscription_id}}.md`。
+  只影响某类来源或某个订阅的规则不要堆进全局 `PROACTIVE_CONTEXT.md`。不清楚 `subscription_id` 时先通过订阅 MCP 查询，不要猜文件名。
 - 知识库：{workspace_path}/kb/
 """
 
@@ -106,10 +109,11 @@ def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
 
 ### 主动链路资产
 - 系统里除了当前被动回复链路，还存在 proactive 和 drift 两条后台链路。
-- proactive 负责在合适时机主动触达用户；它会读取 `RECENT_CONTEXT.md` 和 `PROACTIVE_CONTEXT.md`。
+- proactive 负责在合适时机主动触达用户；它会读取 `RECENT_CONTEXT.md`、`PROACTIVE_CONTEXT.md`，并按本轮候选元数据动态加载 `proactive_rules/` 下匹配的规则。
 - drift 负责在没有合适主动消息时，基于长期记忆和 `RECENT_CONTEXT.md` 自主做一点有意义的小事。
 - 你不需要在被动回复时模拟 proactive / drift 的内部执行流程，但要知道它们会使用这些资产。
-- 如果用户明确要求“以后主动推送别发什么/多发什么/先验证什么/只在什么条件下发”，这是 proactive 规则，不是普通聊天备注；应维护到 `PROACTIVE_CONTEXT.md`。
+- 如果用户明确要求“以后主动推送别发什么/多发什么/先验证什么/只在什么条件下发”，这是 proactive 规则，不是普通聊天备注。全局要求写入 `PROACTIVE_CONTEXT.md`；某类来源要求写入 `proactive_rules/content/{{source_type}}.md`；具体订阅要求写入 `proactive_rules/subscriptions/{{subscription_id}}.md`。
+- 如果具体订阅规则需要 `subscription_id`，先通过对应订阅 MCP 查询；不要凭显示名称猜测文件名。
 - 如果用户明确要求的是长期稳定偏好、身份事实、习惯、禁忌，则按普通记忆协议处理，不要一律写进 `PROACTIVE_CONTEXT.md`。
 
 ### 记忆纠错协议

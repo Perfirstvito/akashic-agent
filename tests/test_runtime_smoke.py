@@ -409,7 +409,7 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     event_bus = EventBus()
     try:
         controller = object()
-        ipc, tg, qq, qqbot = await start_channels(
+        ipc, tg, qq, qqbot, feishu = await start_channels(
             config,
             bus=cast(Any, object()),
             session_manager=cast(Any, object()),
@@ -425,6 +425,7 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     assert tg is not None
     assert qq is not None
     assert qqbot is not None
+    assert feishu is None
     assert starts == ["ipc", "telegram", "qq", "qqbot"]
     assert registrations == [
         ("telegram", ["file", "image", "stream_text", "text"]),
@@ -489,7 +490,7 @@ async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_
     )
     resources = SharedHttpResources()
     try:
-        ipc, tg, qq, qqbot = await start_channels(
+        ipc, tg, qq, qqbot, feishu = await start_channels(
             config,
             bus=cast(Any, object()),
             session_manager=cast(Any, object()),
@@ -504,4 +505,5 @@ async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_
     assert tg is None
     assert qq is None
     assert qqbot is None
+    assert feishu is None
     assert starts == ["ipc"]

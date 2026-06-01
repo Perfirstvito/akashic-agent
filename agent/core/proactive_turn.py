@@ -276,6 +276,7 @@ class ProactiveTurnPipelineDeps:
     recent_proactive_fn: Callable[[], list] | None
     drift_pipeline: DriftTurnPipeline | None
     tool_hooks: list[ToolHook] | None = None
+    workspace_rules_fn: Callable[[list[dict]], str] | None = None
 
 
 # ── 主 Pipeline ─────────────────────────────────────────────────────────
@@ -310,6 +311,7 @@ class ProactiveTurnPipeline:
         self._tool_deps = deps.tool_deps
         self._gateway_deps = deps.gateway_deps
         self._workspace_context_fn = deps.workspace_context_fn
+        self._workspace_rules_fn = deps.workspace_rules_fn
         self._llm_fn = deps.llm_fn
         self._rng = deps.rng if deps.rng is not None else _random_module.Random()
         self._recent_proactive_fn = deps.recent_proactive_fn
@@ -917,7 +919,7 @@ class ProactiveTurnPipeline:
             "3. 如果最终没有 interesting，调用 finish_turn(decision=skip, reason=no_content)。\n"
             "4. 如果最终有 interesting，生成一条最终消息并按 message_push + finish_turn(decision=reply) 收尾。\n\n"
             "【工具职责】\n"
-            "1. Workspace 主动上下文：这是用户当前明确提出并要求你遵守的规则集合。它定义你该怎么筛、哪些要先验证、哪些必须过滤；它不提供新闻事实。\n"
+            "1. Workspace 主动上下文 / 本轮动态主动规则：这是用户当前明确提出并要求你遵守的规则集合。它定义你该怎么筛、哪些要先验证、哪些必须过滤；它不提供新闻事实。\n"
             "2. recall_memory：仅用于 Content 评估——判断单条内容是否可能是用户雷点，或是否可能让用户感兴趣。Alert 不需要调用此工具。\n"
             "   ⚠️ 当内容标题稀疏（如 'RT @xxx'、'Image'、转推无正文）时，必须把 source（来源/作者名）作为关键词纳入 query，不要只靠标题查询。\n"
             "   例：source=terasumc (Artist) 时，query 应包含 'terasumc' 而非只用推文标题。\n"
@@ -929,7 +931,7 @@ class ProactiveTurnPipeline:
             "8. finish_turn(decision=reply) 或 finish_turn(decision=skip, reason=...)：提交或放弃，终止 loop。\n\n"
             "【规则优先级】\n"
             "1. Workspace 主动上下文代表用户当前对主动推送的明确要求，应视为规则而不是建议。\n"
-            "2. 当 Workspace 主动上下文规定了过滤条件、白名单、黑名单、必须先验证的步骤时，你必须遵守，不要凭常识跳过。\n"
+            "2. 当 Workspace 主动上下文或本轮动态主动规则规定了过滤条件、白名单、黑名单、必须先验证的步骤时，你必须遵守，不要凭常识跳过。\n"
             "3. recall_memory 只能帮助你判断用户兴趣和雷点，不能替代规则校验。\n"
             "4. 如果规则判断和你的常识直觉冲突，以 Workspace 主动上下文为准。\n"
             "5. 如果某条内容是否 interesting 取决于规则校验结果，就先完成规则校验，再决定 mark_interesting 或 mark_not_interesting。\n"
@@ -1041,6 +1043,10 @@ class ProactiveTurnPipeline:
             ),
             ("proactive_context", self._render_context_block(gw.context).strip()),
             ("workspace_proactive_context", self._read_workspace_context_for_prompt()),
+            (
+                "dynamic_proactive_rules",
+                self._read_workspace_rules_for_prompt(gw.content_meta),
+            ),
         ):
             if content:
                 sections.append(
@@ -1064,6 +1070,21 @@ class ProactiveTurnPipeline:
             return ""
         return (
             "【Workspace 主动上下文（主/被动 loop 共享规则面板，不是内容源）】\n"
+            + raw[:3000]
+        )
+
+    def _read_workspace_rules_for_prompt(self, content_meta: list[dict]) -> str:
+        if self._workspace_rules_fn is None:
+            return ""
+        try:
+            raw = (self._workspace_rules_fn(content_meta) or "").strip()
+        except Exception:
+            return ""
+        if not raw:
+            return ""
+        return (
+            "【本轮内容匹配的主动规则（按候选元数据动态加载，不是内容源；"
+            "优先级等同 Workspace 主动上下文）】\n"
             + raw[:3000]
         )
 

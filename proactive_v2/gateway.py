@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class GatewayResult:
     alerts: list[dict] = field(default_factory=list)
     context: list[dict] = field(default_factory=list)
-    # 仅含 {id, title, source, url} 的轻量元数据，按顺序
+    # 仅渲染 {id, title, source, url}；可额外携带内部规则路由元数据。
     content_meta: list[dict] = field(default_factory=list)
     # compound_key → 正文（fetch 失败时为空字符串）
     content_store: dict[str, str] = field(default_factory=dict)
@@ -117,13 +117,26 @@ class DataGateway:
             ack_server = event.get("ack_server", "")
             compound_key = f"{ack_server}:{item_id}"
 
-            content_meta.append({
+            meta = {
                 "id": compound_key,
                 "title": event.get("title") or "",
                 "source": event.get("source_name") or "",
                 "url": event.get("url") or "",
                 "published_at": event.get("published_at") or "",
-            })
+            }
+            for key in (
+                "source_type",
+                "subscription_type",
+                "subscription_id",
+                "subscription_name",
+            ):
+                value = event.get(key)
+                if value:
+                    meta[key] = value
+            rule_keys = event.get("rule_keys") or event.get("proactive_rule_keys")
+            if rule_keys:
+                meta["_rule_keys"] = rule_keys
+            content_meta.append(meta)
 
             if isinstance(result, Exception) or not result:
                 logger.debug("[gateway] web_fetch failed for %s: %s", compound_key, result)

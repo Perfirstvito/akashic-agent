@@ -53,6 +53,7 @@ class AgentTickDeps:
     deduper: Any | None
     rng: Any
     workspace_context_fn: Callable[[], str]
+    workspace_rules_fn: Callable[[list[dict]], str] | None = None
     shared_tools: ToolRegistry | None = None
     turn_orchestrator: TurnOrchestrator | None = None
     pool: McpClientPool | None = None
@@ -91,6 +92,7 @@ class AgentTickFactory:
                 tool_deps=tool_deps,
                 gateway_deps=gateway_deps,
                 workspace_context_fn=self._deps.workspace_context_fn,
+                workspace_rules_fn=self._deps.workspace_rules_fn,
                 llm_fn=self._build_llm_fn(),
                 rng=self._deps.rng,
                 recent_proactive_fn=recent_proactive_fn,
