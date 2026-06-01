@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import cast
 
+from agent.lifecycle.slots import FrameSlot, FrameSlotPrefix, PhaseAnchor
 from agent.lifecycle.types import AfterStepCtx
 from agent.plugins import Plugin
 
-_CTX_SLOT = "step:ctx"
-_EARLY_STOP_REASON_SLOT = "step:early_stop_reason"
-_TELEMETRY_PREFIX = "step:telemetry:"
+_CTX_SLOT = FrameSlot.STEP_CTX
+_EARLY_STOP_REASON_SLOT = FrameSlot.STEP_EARLY_STOP_REASON
+_TELEMETRY_PREFIX = FrameSlotPrefix.STEP_TELEMETRY
 
 _MODEL_CONTEXT_WINDOW_TOKENS = 1_000_000
 _CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS = _MODEL_CONTEXT_WINDOW_TOKENS * 80 // 100
@@ -15,7 +16,7 @@ _CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS = _MODEL_CONTEXT_WINDOW_TOKENS * 80 // 1
 
 class ContextPressureStopModule:
     slot = "context_pressure.stop"
-    requires = ("after_step.copy_input", _CTX_SLOT)
+    requires = (PhaseAnchor.AFTER_STEP_INPUT_READY, _CTX_SLOT)
     produces = (
         _EARLY_STOP_REASON_SLOT,
         f"{_TELEMETRY_PREFIX}context_pressure_tokens",

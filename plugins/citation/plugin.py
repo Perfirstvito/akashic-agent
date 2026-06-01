@@ -4,13 +4,14 @@ import json
 import re
 from typing import Any, cast
 
+from agent.lifecycle.slots import FrameSlot, PhaseAnchor
 from agent.lifecycle.types import PromptRenderCtx
 from agent.plugins import Plugin
 from agent.prompting import PromptSectionRender
 
-_PROMPT_CTX_SLOT = "prompt:ctx"
-_REASONING_CTX_SLOT = "reasoning:ctx"
-_PERSIST_CITED_SLOT = "persist:assistant:cited_memory_ids"
+_PROMPT_CTX_SLOT = FrameSlot.PROMPT_CTX
+_REASONING_CTX_SLOT = FrameSlot.REASONING_CTX
+_PERSIST_CITED_SLOT = FrameSlot.PERSIST_ASSISTANT_CITED_MEMORY_IDS
 _TRAILING_PROTOCOL_TAG = r"<[a-zA-Z][a-zA-Z0-9_-]*:[^<>\s]+>"
 _CITED_RE = re.compile(
     rf"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_,\-\s]*)\]§(?P<trailing>(?:\s*{_TRAILING_PROTOCOL_TAG}\s*)*)$",
@@ -33,7 +34,7 @@ _CITATION_PROTOCOL = """### 记忆引用协议 - 内部元数据，对用户不�
 
 class CitationPromptModule:
     slot = "citation.prompt"
-    requires = ("prompt_render.emit", _PROMPT_CTX_SLOT)
+    requires = (PhaseAnchor.PROMPT_RENDER_CTX_EMITTED, _PROMPT_CTX_SLOT)
     produces = (_PROMPT_CTX_SLOT,)
 
     async def run(self, frame: Any) -> Any:
@@ -52,7 +53,7 @@ class CitationPromptModule:
 
 class CitationAfterReasoningModule:
     slot = "citation.after_reasoning"
-    requires = ("after_reasoning.build_ctx", _REASONING_CTX_SLOT)
+    requires = (PhaseAnchor.AFTER_REASONING_REPLY_READY, _REASONING_CTX_SLOT)
     produces = (_REASONING_CTX_SLOT, _PERSIST_CITED_SLOT)
 
     async def run(self, frame: Any) -> Any:
@@ -77,7 +78,7 @@ class CitationAfterReasoningModule:
 
 class ProtocolTagCleanupModule:
     slot = "citation.protocol_cleanup"
-    requires = ("after_reasoning.emit", _REASONING_CTX_SLOT)
+    requires = (PhaseAnchor.AFTER_REASONING_CTX_EMITTED, _REASONING_CTX_SLOT)
     produces = (_REASONING_CTX_SLOT,)
 
     async def run(self, frame: Any) -> Any:

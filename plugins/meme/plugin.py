@@ -4,18 +4,19 @@ import re
 from pathlib import Path
 from typing import Any, cast
 
+from agent.lifecycle.slots import FrameSlot, PhaseAnchor
 from agent.lifecycle.types import AfterReasoningCtx, PromptRenderCtx
 from agent.plugins import Plugin, on_after_reasoning
 from agent.prompting import PromptSectionRender
 from .runtime import MemeCatalog, MemeDecorator
 
-_CTX_SLOT = "prompt:ctx"
+_CTX_SLOT = FrameSlot.PROMPT_CTX
 _MEME_RE = re.compile(r"<meme:([a-zA-Z0-9_-]+)>", re.IGNORECASE)
 
 
 class MemePromptModule:
     slot = "meme.prompt"
-    requires = ("prompt_render.emit", "citation.prompt", _CTX_SLOT)
+    requires = (PhaseAnchor.PROMPT_RENDER_CTX_EMITTED, "citation.prompt", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, plugin: "MemePlugin") -> None:

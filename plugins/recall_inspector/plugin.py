@@ -8,17 +8,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
+from agent.lifecycle.slots import FrameSlot, PhaseAnchor
 from agent.lifecycle.types import AfterToolResultCtx, BeforeTurnCtx
 from agent.plugins import Plugin, on_tool_result
 
-_CTX_SLOT = "session:ctx"
+_CTX_SLOT = FrameSlot.BEFORE_TURN_CTX
 _ITEM_LINE_RE = re.compile(r"^-\s+\[([^\]]+)\]\s*(.*)$")
 _META_RE = re.compile(r"（(?P<meta>[^（）]*(?:证据|src|有印象|不确定)[^（）]*)）$")
 
 
 class ContextPrepareRecordModule:
     slot = "recall_inspector.main"
-    requires = ("before_turn.emit", _CTX_SLOT)
+    requires = (PhaseAnchor.BEFORE_TURN_CTX_EMITTED, _CTX_SLOT)
 
     def __init__(self, plugin: "RecallInspector") -> None:
         self._plugin = plugin

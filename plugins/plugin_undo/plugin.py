@@ -5,14 +5,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
+from agent.lifecycle.slots import FrameSlot, PhaseAnchor
 from agent.lifecycle.types import BeforeTurnCtx
 from agent.plugins import Plugin
 from agent.prompting import is_context_frame
 
 logger = logging.getLogger("plugin.undo")
 
-_SESSION_SLOT = "session:session"
-_CTX_SLOT = "session:ctx"
+_SESSION_SLOT = FrameSlot.SESSION
+_CTX_SLOT = FrameSlot.BEFORE_TURN_CTX
 
 
 @dataclass
@@ -27,7 +28,7 @@ class _UndoSessionResult:
 
 class UndoCommandModule:
     slot = "plugin_undo.undo"
-    requires = ("before_turn.acquire_session", _SESSION_SLOT)
+    requires = (PhaseAnchor.BEFORE_TURN_SESSION_READY, _SESSION_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, plugin: "PluginUndo") -> None:

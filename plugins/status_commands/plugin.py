@@ -8,21 +8,22 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
+from agent.lifecycle.slots import FrameSlot, PhaseAnchor
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
 from agent.plugins import Plugin
 from agent.prompting import is_context_frame
 
 logger = logging.getLogger("plugin.status_commands")
 
-_SESSION_SLOT = "session:session"
-_CTX_SLOT = "session:ctx"
+_SESSION_SLOT = FrameSlot.SESSION
+_CTX_SLOT = FrameSlot.BEFORE_TURN_CTX
 _TS_PATTERN = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})")
 _BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
 class MemoryStatusCommandModule:
     slot = "status_commands.memory_status"
-    requires = ("before_turn.acquire_session", _SESSION_SLOT)
+    requires = (PhaseAnchor.BEFORE_TURN_SESSION_READY, _SESSION_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, plugin_name: str) -> None:
@@ -59,7 +60,7 @@ class MemoryStatusCommandModule:
 
 class KVCacheCommandModule:
     slot = "status_commands.kvcache"
-    requires = ("before_turn.acquire_session", _SESSION_SLOT)
+    requires = (PhaseAnchor.BEFORE_TURN_SESSION_READY, _SESSION_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, plugin_name: str, db_path: Path | None) -> None:

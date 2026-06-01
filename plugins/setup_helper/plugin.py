@@ -2,24 +2,25 @@ from __future__ import annotations
 
 from typing import cast
 
+from agent.lifecycle.slots import FrameSlot, PhaseAnchor
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
 from agent.plugins import Plugin
 
 
 class ChatIdCommandModule:
     slot = "setup_helper.chatid"
-    requires = ("before_turn.acquire_session", "session:session")
-    produces = ("session:ctx",)
+    requires = (PhaseAnchor.BEFORE_TURN_SESSION_READY, FrameSlot.SESSION)
+    produces = (FrameSlot.BEFORE_TURN_CTX,)
 
     async def run(self, frame: object) -> object:
-        if "session:ctx" in frame.slots:  # type: ignore[attr-defined]
+        if FrameSlot.BEFORE_TURN_CTX in frame.slots:  # type: ignore[attr-defined]
             return frame
         state: TurnState = frame.input  # type: ignore[attr-defined]
         if _normalize_command(state.msg.content) not in {"/chatid", "/myid"}:
             return frame
         chat_id = state.msg.chat_id or "（未知）"
         reply = _format_reply(chat_id, channel=state.msg.channel)
-        frame.slots["session:ctx"] = _abort_ctx(state, reply)  # type: ignore[attr-defined]
+        frame.slots[FrameSlot.BEFORE_TURN_CTX] = _abort_ctx(state, reply)  # type: ignore[attr-defined]
         return frame
 
 
