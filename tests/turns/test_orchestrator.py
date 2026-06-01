@@ -124,7 +124,55 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     assert sent is True
     assert session.messages[0]["proactive"] is True
     assert session.messages[0]["content"] == "hello"
-    assert order == ["persist", "side_effect", "dispatch", "presence", "success_effect"]
+    assert order == ["side_effect", "dispatch", "persist", "presence", "success_effect"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_proactive_reply_does_not_persist_when_dispatch_fails():
+    order: list[str] = []
+    session = _DummySession("telegram:123")
+
+    class _Effect:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        async def run(self) -> None:
+            order.append(self._name)
+
+    class _Outbound:
+        async def dispatch(self, outbound: OutboundDispatch) -> bool:
+            order.append("dispatch")
+            return False
+
+    presence = SimpleNamespace(record_proactive_sent=lambda _key: order.append("presence"))
+    session_manager = SimpleNamespace(
+        get_or_create=lambda _key: session,
+        append_messages=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("persist")),
+    )
+    orchestrator = TurnOrchestrator(
+        TurnOrchestratorDeps(
+            session=SessionServices(session_manager=cast(Any, session_manager), presence=cast(Any, presence)),
+            outbound=_Outbound(),
+        )
+    )
+
+    sent = await orchestrator.handle_proactive_turn(
+        result=TurnResult(
+            decision="reply",
+            outbound=TurnOutbound(session_key="telegram:123", content="hello"),
+            side_effects=[_Effect("side_effect")],
+            success_side_effects=[_Effect("success_effect")],
+            failure_side_effects=[_Effect("failure_effect")],
+        ),
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+    )
+
+    assert sent is False
+    assert session.messages == []
+    session_manager.append_messages.assert_not_called()
+    assert order == ["side_effect", "dispatch", "failure_effect"]
 
 
 @pytest.mark.asyncio
