@@ -49,6 +49,9 @@ benchmark/data/
 qa_error_log_*.txt
 lme_error_log_*.txt
 /config.json.bak
+/eval/memory_engine/badcases/
+/eval/memory_engine/reports/
+/eval/memory_engine/sandbox/
 
 # Local AI assistant docs
 /CLAUDE.md
