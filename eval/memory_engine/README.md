@@ -90,3 +90,72 @@ silently falling back when embedding is unavailable.
 For an empty-gold case, an empty result is recorded as `empty_gold_correct`
 instead of inventing a `precision@0` value. Use these cases to measure
 over-recall separately from precision and recall.
+
+## Badcase Lane Eval
+
+`badcases/badcase_with_expectedid/` is the private, appendable input directory
+for badcases that have been manually labeled with `expected.memory_ids`.
+Generated reports stay under `reports/`, and sandbox DB copies stay under
+`sandbox/`; none of these paths are tracked by Git.
+
+Initialize the current labeled review set:
+
+```bash
+python3 -m eval.memory_engine.badcase_lane_eval \
+  --init-from eval/memory_engine/badcases/high_review_20260602 \
+  --badcase-dir eval/memory_engine/badcases/badcase_with_expectedid
+```
+
+Run lane diagnostics:
+
+```bash
+python3 -m eval.memory_engine.badcase_lane_eval \
+  --badcase-dir eval/memory_engine/badcases/badcase_with_expectedid
+```
+
+The runner groups cases by `source_workspace` by default and copies each
+source `memory/memory2.db` into an isolated sandbox before replay. It reports
+per-case dense, keyword summary LIKE, eval-only BM25 summary, and RRF fusion
+`precision@topn`, `recall@topn`, and `f1@topn`, where `N` is each lane's actual
+returned count. It also tags chain categories such as dense-hit/keyword-miss,
+dense-miss/keyword-hit, both-miss-with-different-results, and both-hit-but-RRF
+missed. Sticky-memory cases are kept as target-presence diagnostics and are not
+included in precision/recall aggregates.
+
+## Pull Remote Workspace Snapshots
+
+Copy the tracked example config and fill in your SSH alias and paths:
+
+```bash
+cp eval/memory_engine/remote_sync.example.toml \
+  eval/memory_engine/remote_sync.local.toml
+```
+
+The local config, pulled snapshots, generated badcases, and reports are ignored
+by Git. Prefer an SSH alias in `~/.ssh/config` so credentials never appear in
+the TOML file. SSH runs in batch mode, so scheduled runs fail instead of
+waiting for an interactive password prompt.
+
+Pull a consistent remote snapshot and optionally extract badcases:
+
+```bash
+python3 -m eval.memory_engine.pull_remote_snapshot
+```
+
+The pull runner sends `snapshot_workspace.py` to the remote host over SSH. The
+remote script uses SQLite's backup API for `sessions.db`, `memory/memory2.db`,
+and optional `observe/observe.db`; it also copies complete lines from
+`observe/recall_inspector.jsonl` and copies `memory/*.json`. It never writes to
+the live workspace. The downloaded snapshot is checksum-verified before the
+local `latest` pointer is updated.
+
+For local scheduling, run the pull command from cron or a Windows scheduled
+task. To generate remote snapshots independently, deploy the repository on the
+server and run:
+
+```bash
+python3 -m eval.memory_engine.snapshot_workspace \
+  --workspace ~/.akashic/workspace \
+  --output-root ~/.akashic/memory-engine-snapshots \
+  --retention 7
+```

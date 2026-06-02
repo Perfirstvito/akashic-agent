@@ -1,0 +1,21 @@
+[remote]
+# Prefer an SSH alias configured in ~/.ssh/config.
+host = "akashic-prod"
+workspace = "~/.akashic/workspace"
+snapshot_root = "~/.akashic/memory-engine-snapshots"
+python = "python3"
+# Options must be accepted by both ssh and scp. Prefer ~/.ssh/config.
+ssh_options = []
+retention = 7
+
+[local]
+# This directory contains private memory snapshots and is ignored by Git.
+snapshot_root = "eval/memory_engine/remote_snapshots/akashic-prod"
+retention = 30
+
+[extract]
+# Generate a new ignored badcase directory after each successful pull.
+enabled = true
+badcase_dir = "eval/memory_engine/badcases/remote/{stamp}"
+report = "eval/memory_engine/reports/remote_extract_{stamp}.jsonl"
+no_source_messages = false

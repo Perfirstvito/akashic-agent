@@ -52,6 +52,8 @@ lme_error_log_*.txt
 /eval/memory_engine/badcases/
 /eval/memory_engine/reports/
 /eval/memory_engine/sandbox/
+/eval/memory_engine/remote_snapshots/
+/eval/memory_engine/remote_sync.local.toml
 
 # Local AI assistant docs
 /CLAUDE.md
