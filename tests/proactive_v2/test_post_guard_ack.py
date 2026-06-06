@@ -352,15 +352,23 @@ async def test_delivery_dedupe_hit_acks_cited_24h():
 async def test_delivery_dedupe_hit_no_mark_delivery():
     state = FakeStateStore()
     state.set_is_duplicate(True)
+    gate = MagicMock()
+    gate.should_act.return_value = (True, {})
 
     llm = FakeLLM([
         ("message_push", {"message": "hi", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_pipeline_with_sink(llm, state=state)
+    tick = make_proactive_pipeline(
+        llm_fn=llm,
+        state_store=state,
+        any_action_gate=gate,
+        tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
+    )
     await tick.run()
 
     assert state._deliveries == []
+    gate.record_action.assert_not_called()
 
 
 # ── message_dedupe ────────────────────────────────────────────────────────
@@ -510,6 +518,56 @@ async def test_send_failure_no_mark_delivery():
     await tick.run()
 
     assert state._deliveries == []
+
+
+@pytest.mark.asyncio
+async def test_send_failure_no_anyaction_and_tick_log_marks_failed():
+    state = FakeStateStore()
+    sender = AsyncMock()
+    sender.send.return_value = False
+    gate = MagicMock()
+    gate.should_act.return_value = (True, {})
+
+    llm = FakeLLM([
+        ("message_push", {"message": "hi", "evidence": []}),
+        ("finish_turn", {"decision": "reply"}),
+    ])
+    tick = make_proactive_pipeline(
+        llm_fn=llm,
+        state_store=state,
+        sender=sender,
+        any_action_gate=gate,
+        tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
+    )
+
+    await tick.run()
+
+    gate.record_action.assert_not_called()
+    assert state.tick_log_finishes[-1]["terminal_action"] == "send_failed"
+    assert state.tick_log_finishes[-1]["skip_reason"] == "send_failed"
+
+
+@pytest.mark.asyncio
+async def test_successful_send_records_anyaction_after_dispatch():
+    sender = AsyncMock()
+    sender.send.return_value = True
+    gate = MagicMock()
+    gate.should_act.return_value = (True, {})
+
+    llm = FakeLLM([
+        ("message_push", {"message": "hi", "evidence": []}),
+        ("finish_turn", {"decision": "reply"}),
+    ])
+    tick = make_proactive_pipeline(
+        llm_fn=llm,
+        sender=sender,
+        any_action_gate=gate,
+        tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
+    )
+
+    await tick.run()
+
+    gate.record_action.assert_called_once()
 
 
 @pytest.mark.asyncio

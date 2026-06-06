@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, call
 import pytest
 
 from agent.scheduler import LatencyTracker, SchedulerService, ScheduledJob
+from bus.processing import ProcessingState
 from tests.conftest import drain_tasks, make_job
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -56,6 +57,154 @@ async def test_instant_push_receives_correct_args(
     mock_push.execute.assert_called_once_with(
         channel="telegram", chat_id="999", message="喝水了"
     )
+
+
+async def test_scheduler_serializes_instant_jobs_for_same_target(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    active = 0
+    max_active = 0
+
+    async def push_side_effect(**kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return "文本已发送"
+
+    mock_push.execute.side_effect = push_side_effect
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    first = make_job(
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        channel="telegram",
+        chat_id="same",
+        message="a",
+    )
+    second = make_job(
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        channel="telegram",
+        chat_id="same",
+        message="b",
+    )
+    svc._jobs[first.id] = first
+    svc._jobs[second.id] = second
+
+    await svc._tick()
+    await drain_tasks()
+
+    assert mock_push.execute.call_count == 2
+    assert max_active == 1
+
+
+async def test_scheduler_waits_for_agent_loop_target_processing_state(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    processing_state = ProcessingState()
+    mock_loop.processing_state = processing_state
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        channel="telegram",
+        chat_id="123",
+        message="blocked until passive turn finishes",
+    )
+    svc._jobs[job.id] = job
+
+    async with processing_state.acquire("telegram:123"):
+        await svc._tick()
+        await asyncio.sleep(0.01)
+        mock_push.execute.assert_not_called()
+
+    await drain_tasks()
+
+    mock_push.execute.assert_called_once()
+
+
+async def test_scheduler_queues_outbound_when_agent_loop_bus_available(
+    tmp_path, mock_push, fixed_now
+):
+    class FakeBus:
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def publish_outbound(self, msg):
+            self.messages.append(msg)
+
+    class FakeLoop:
+        def __init__(self) -> None:
+            self.processing_state = ProcessingState()
+            self.bus = FakeBus()
+
+    loop = FakeLoop()
+    svc = SchedulerService(
+        store_path=tmp_path / "jobs.json",
+        push_tool=mock_push,
+        agent_loop=loop,
+        tracker=LatencyTracker(default=25.0),
+        _now_fn=lambda: fixed_now,
+    )
+    job = make_job(
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        channel="telegram",
+        chat_id="123",
+        message="queued through bus",
+    )
+    svc._jobs[job.id] = job
+
+    await svc._tick()
+    await drain_tasks()
+
+    mock_push.execute.assert_not_called()
+    assert len(loop.bus.messages) == 1
+    assert loop.bus.messages[0].content == "queued through bus"
+
+
+async def test_instant_push_failure_keeps_one_shot_job(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    mock_push.execute.return_value = "发送失败：network"
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="at",
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        message="retry me",
+    )
+    svc._jobs[job.id] = job
+
+    await svc._tick()
+    await drain_tasks()
+
+    assert job.id in svc._jobs
+    assert svc._jobs[job.id].run_count == 0
+
+
+def test_recover_skips_bad_recurring_job_without_stopping(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    good = make_job(
+        trigger="at",
+        tier="instant",
+        fire_at=fixed_now + timedelta(seconds=60),
+    )
+    bad = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        cron_expr="bad cron",
+    )
+    svc.store.save({bad.id: bad, good.id: good})
+
+    svc.load_and_recover()
+
+    assert good.id in svc._jobs
+    assert bad.id not in svc._jobs
 
 
 # ── Execution: SOFT ──────────────────────────────────────────────

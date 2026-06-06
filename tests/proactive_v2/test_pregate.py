@@ -12,11 +12,14 @@ TDD — Phase 4: proactive_v2/ProactiveTurnPipeline — Pre-gate
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from bus.processing import ProcessingState
+from proactive_v2.gateway import GatewayDeps
 from tests.proactive_v2.conftest import (
     FakeLLM,
     FakeRng,
@@ -51,6 +54,31 @@ async def test_passive_busy_none_fn_does_not_block():
     tick = make_proactive_pipeline(passive_busy_fn=None)
     result = await tick.run()
     assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_processing_acquire_serializes_proactive_body_after_gate():
+    processing_state = ProcessingState()
+    alert_fn = AsyncMock(return_value=[])
+    tick = make_proactive_pipeline(
+        session_key="telegram:123",
+        passive_busy_fn=lambda _sk: False,
+        processing_acquire=processing_state.acquire,
+        gateway_deps=GatewayDeps(
+            alert_fn=alert_fn,
+            feed_fn=AsyncMock(return_value=[]),
+            context_fn=AsyncMock(return_value=[]),
+        ),
+    )
+
+    async with processing_state.acquire("telegram:123"):
+        task = asyncio.create_task(tick.run())
+        await asyncio.sleep(0.01)
+        alert_fn.assert_not_called()
+
+    await task
+
+    alert_fn.assert_called_once()
 
 
 @pytest.mark.asyncio

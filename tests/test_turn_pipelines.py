@@ -23,6 +23,7 @@ from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
 from bus.events_lifecycle import TurnCommitted
+from bus.processing import ProcessingState
 from core.memory.engine import MemoryEngineRetrieveResult
 from bootstrap.wiring import wire_turn_lifecycle
 
@@ -146,6 +147,18 @@ async def test_process_direct_suppresses_stream_and_memory_when_requested():
         "disabled_tools": ["message_push"],
     }
     assert loop._process.await_args.kwargs["dispatch_outbound"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_processing_scope_uses_processing_state_lock():
+    loop = object.__new__(AgentLoop)
+    processing_state = ProcessingState()
+    loop._processing_state = processing_state
+
+    async with AgentLoop._processing_scope(loop, "telegram:123"):
+        assert processing_state.is_busy("telegram:123")
+
+    assert not processing_state.is_busy("telegram:123")
 
 
 def _make_loop(

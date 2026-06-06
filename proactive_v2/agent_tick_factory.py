@@ -50,6 +50,7 @@ class AgentTickDeps:
     state_store: Any
     any_action_gate: Any
     passive_busy_fn: Any | None
+    processing_acquire: Any | None
     deduper: Any | None
     rng: Any
     workspace_context_fn: Callable[[], str]
@@ -87,6 +88,7 @@ class AgentTickFactory:
                 any_action_gate=self._deps.any_action_gate,
                 last_user_at_fn=last_user_at_fn,
                 passive_busy_fn=self._deps.passive_busy_fn,
+                processing_acquire=self._deps.processing_acquire,
                 turn_orchestrator=self._deps.turn_orchestrator,
                 deduper=self._deps.deduper,
                 tool_deps=tool_deps,

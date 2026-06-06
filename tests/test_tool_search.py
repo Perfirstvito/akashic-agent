@@ -80,6 +80,15 @@ class _ExistingDescriptionTool(Tool):
         return description
 
 
+class _ContextEchoTool(Tool):
+    name = "context_echo"
+    description = "回显 registry 注入的上下文"
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs: Any) -> str:
+        return f"{kwargs.get('channel')}:{kwargs.get('chat_id')}"
+
+
 def _make_registry() -> ToolRegistry:
     """构建测试用 registry。
 
@@ -200,6 +209,31 @@ async def test_registry_keeps_real_description_parameter() -> None:
     )
 
     assert result == "业务描述"
+
+
+@pytest.mark.asyncio
+async def test_registry_context_is_isolated_per_task() -> None:
+    reg = ToolRegistry()
+    reg.register(_ContextEchoTool())
+    ready_a = asyncio.Event()
+    ready_b = asyncio.Event()
+    go = asyncio.Event()
+
+    async def run(channel: str, chat_id: str, ready: asyncio.Event) -> str:
+        reg.set_context(channel=channel, chat_id=chat_id)
+        ready.set()
+        await go.wait()
+        result = await reg.execute("context_echo", {})
+        assert isinstance(result, str)
+        return result
+
+    task_a = asyncio.create_task(run("telegram", "1", ready_a))
+    task_b = asyncio.create_task(run("feishu", "2", ready_b))
+    await ready_a.wait()
+    await ready_b.wait()
+    go.set()
+
+    assert await asyncio.gather(task_a, task_b) == ["telegram:1", "feishu:2"]
 
 
 # ── _default_normalize 单元测试 ───────────────────────────────────────────────

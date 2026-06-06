@@ -43,6 +43,7 @@ def _build_deps(*, with_pool: bool):
         state_store=SimpleNamespace(),
         any_action_gate=SimpleNamespace(),
         passive_busy_fn=None,
+        processing_acquire=None,
         deduper=None,
         rng=SimpleNamespace(),
         workspace_context_fn=lambda: "",

@@ -87,6 +87,7 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
             any_action_gate=MagicMock(),
             last_user_at_fn=lambda: None,
             passive_busy_fn=None,
+            processing_acquire=None,
             turn_orchestrator=None,
             deduper=MagicMock(),
             tool_deps=cast(Any, SimpleNamespace(

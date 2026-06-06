@@ -20,6 +20,15 @@ if TYPE_CHECKING:
     from core.memory.runtime import MemoryRuntime
 
 
+def _processing_acquire(agent_loop: AgentLoop):
+    processing_state = agent_loop.processing_state
+    if processing_state is None:
+        return None
+    if not callable(getattr(type(processing_state), "acquire", None)):
+        return None
+    return processing_state.acquire
+
+
 def _build_proactive_provider(config: Config, provider: LLMProvider) -> LLMProvider:
     api_key = str(getattr(config, "api_key", "") or "").strip()
     system_prompt = str(getattr(config, "system_prompt", "") or "")
@@ -80,6 +89,8 @@ def build_proactive_runtime(
         passive_busy_fn=(
             agent_loop.processing_state.is_busy if agent_loop.processing_state else None
         ),
+        processing_acquire=_processing_acquire(agent_loop),
+        outbound_bus=getattr(agent_loop, "bus", None),
         shared_tools=getattr(agent_loop, "tools", None),
         tool_hooks=tool_hooks,
     )

@@ -511,7 +511,7 @@ async def test_drift_pipeline_does_not_force_finish_at_step_limit(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
+async def test_agent_tick_enters_silent_drift_without_recording_action(tmp_path: Path):
     _write_skill(tmp_path)
     gate = MagicMock()
     gate.should_act.return_value = (True, {})
@@ -552,7 +552,7 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
     )
     await tick.run()
     assert tick.last_ctx.drift_entered is True
-    gate.record_action.assert_called_once()
+    gate.record_action.assert_not_called()
     assert len(tick._state_store.tick_step_logs) == 2
     assert tick._state_store.tick_step_logs[0]["phase"] == "drift"
     assert tick._state_store.tick_step_logs[0]["tool_name"] == "read_file"
@@ -647,6 +647,7 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
             any_action_gate=gate,
             last_user_at_fn=lambda: None,
             passive_busy_fn=None,
+            processing_acquire=None,
             turn_orchestrator=orchestrator,
             deduper=AsyncMock(),
             tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
@@ -1047,6 +1048,7 @@ def _build_factory(tmp_path: Path, *, sender_ok: bool, state_store):
         state_store=state_store,
         any_action_gate=SimpleNamespace(),
         passive_busy_fn=None,
+        processing_acquire=None,
         deduper=None,
         rng=SimpleNamespace(),
         workspace_context_fn=lambda: "",

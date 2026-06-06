@@ -14,6 +14,9 @@ Scheduler: 定时任务核心模块
 """
 
 import asyncio
+import inspect
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from importlib import import_module
 import logging
 import re
@@ -28,6 +31,7 @@ from typing import Any, Callable
 
 from zoneinfo import ZoneInfo
 
+from bus.events import OutboundMessage
 from core.common.timekit import parse_iso as _parse_iso
 from infra.persistence.json_store import load_json, save_json
 
@@ -355,6 +359,7 @@ class SchedulerService:
         self._now = _now_fn or (lambda: datetime.now(timezone.utc))
         self._jobs: dict[str, ScheduledJob] = {}
         self._in_flight: set[str] = set()
+        self._target_locks: dict[str, asyncio.Lock] = {}
         self._running = False
 
     # ── Public API ───────────────────────────────────────────────
@@ -406,31 +411,40 @@ class SchedulerService:
         count_loaded = 0
 
         for job in jobs:
-            if not job.enabled:
-                continue
+            try:
+                if not job.enabled:
+                    continue
 
-            if job.fire_at.tzinfo is None:
-                job.fire_at = job.fire_at.replace(tzinfo=timezone.utc)
+                if job.fire_at.tzinfo is None:
+                    job.fire_at = job.fire_at.replace(tzinfo=timezone.utc)
 
-            if job.fire_at <= now:
-                age = (now - job.fire_at).total_seconds()
-                if job.trigger == "every":
-                    # 推进到下一个未来时间
-                    job.fire_at = self._advance_every(job, now)
-                    self._jobs[job.id] = job
-                    count_loaded += 1
-                elif age <= self.GRACE_SECONDS:
-                    # 在宽限期内，保留（下次 tick 会执行）
-                    self._jobs[job.id] = job
-                    count_loaded += 1
+                if job.fire_at <= now:
+                    age = (now - job.fire_at).total_seconds()
+                    if job.trigger == "every":
+                        # 推进到下一个未来时间
+                        job.fire_at = self._advance_every(job, now)
+                        self._jobs[job.id] = job
+                        count_loaded += 1
+                    elif age <= self.GRACE_SECONDS:
+                        # 在宽限期内，保留（下次 tick 会执行）
+                        self._jobs[job.id] = job
+                        count_loaded += 1
+                    else:
+                        logger.info(
+                            f"Job {job.id[:8]} ({job.name or 'unnamed'}) expired "
+                            f"{age:.0f}s ago, beyond grace period — discarded"
+                        )
                 else:
-                    logger.info(
-                        f"Job {job.id[:8]} ({job.name or 'unnamed'}) expired "
-                        f"{age:.0f}s ago, beyond grace period — discarded"
-                    )
-            else:
-                self._jobs[job.id] = job
-                count_loaded += 1
+                    self._jobs[job.id] = job
+                    count_loaded += 1
+            except Exception as e:
+                logger.warning(
+                    "[scheduler] recover skipped bad job %s (%s): %s",
+                    job.id[:8],
+                    job.name or "unnamed",
+                    e,
+                    exc_info=True,
+                )
 
         logger.info(f"SchedulerService recovered {count_loaded} jobs")
 
@@ -451,15 +465,19 @@ class SchedulerService:
                 asyncio.create_task(self._execute_and_reschedule(job))
 
     async def _execute_and_reschedule(self, job: ScheduledJob) -> None:
+        succeeded = False
         try:
             await self._execute(job)
             job.run_count += 1
+            succeeded = True
         except Exception as e:
             logger.error(f"Job {job.id[:8]} execution failed: {e}", exc_info=True)
         finally:
             self._in_flight.discard(job.id)
             now = self._now()
-            if job.trigger == "every":
+            if not succeeded:
+                self._jobs[job.id] = job
+            elif job.trigger == "every":
                 # SOFT recurring jobs may execute before nominal fire_at.
                 # Reschedule strictly after the later of "now" and the nominal
                 # boundary, otherwise cron jobs can re-fire the same occurrence
@@ -472,13 +490,18 @@ class SchedulerService:
             self.store.save(self._jobs)
 
     async def _execute(self, job: ScheduledJob) -> None:
+        async with self._target_processing_scope(job):
+            await self._execute_locked(job)
+
+    async def _execute_locked(self, job: ScheduledJob) -> None:
         label = job.name or job.id[:8]
         if job.tier == "instant":
-            result = await self.push_tool.execute(
+            result = await self._send_message(
                 channel=job.channel,
                 chat_id=job.chat_id,
                 message=job.message,
             )
+            self._ensure_send_success(result)
             logger.info(f"[scheduler] instant 推送完成 {label!r}: {result}")
         else:
             loop = self._get_agent_loop()
@@ -498,11 +521,12 @@ class SchedulerService:
                 f"[scheduler] soft AI 完成 {label!r}  耗时={elapsed:.1f}s  P90={self.tracker.lead:.1f}s"
             )
             if content:
-                result = await self.push_tool.execute(
+                result = await self._send_message(
                     channel=job.channel,
                     chat_id=job.chat_id,
                     message=content,
                 )
+                self._ensure_send_success(result)
                 logger.info(f"[scheduler] soft 推送完成 {label!r}: {result}")
             else:
                 logger.warning(f"[scheduler] soft AI 返回空内容 {label!r}，跳过推送")
@@ -512,6 +536,87 @@ class SchedulerService:
         if loop is None:
             raise RuntimeError("scheduler soft job requires agent_loop")
         return loop
+
+    def _target_session_key(self, job: ScheduledJob) -> str:
+        return f"{job.channel}:{job.chat_id}"
+
+    def _target_lock(self, session_key: str) -> asyncio.Lock:
+        lock = self._target_locks.get(session_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._target_locks[session_key] = lock
+        return lock
+
+    @asynccontextmanager
+    async def _target_processing_scope(self, job: ScheduledJob) -> AsyncIterator[None]:
+        session_key = self._target_session_key(job)
+        async with self._target_lock(session_key):
+            processing_state = self._resolve_processing_state()
+            acquire = (
+                getattr(processing_state, "acquire", None)
+                if callable(getattr(type(processing_state), "acquire", None))
+                else None
+            )
+            if acquire is not None:
+                async with acquire(session_key):
+                    yield
+                return
+            yield
+
+    def _resolve_processing_state(self) -> Any:
+        loop = (
+            self._agent_loop_provider()
+            if self._agent_loop_provider
+            else self.agent_loop
+        )
+        return getattr(loop, "processing_state", None)
+
+    async def _send_message(
+        self,
+        *,
+        channel: str,
+        chat_id: str,
+        message: str | None,
+    ) -> Any:
+        bus = self._resolve_outbound_bus()
+        if bus is not None:
+            maybe = bus.publish_outbound(
+                OutboundMessage(
+                    channel=channel,
+                    chat_id=chat_id,
+                    content=message or "",
+                )
+            )
+            if inspect.isawaitable(maybe):
+                await maybe
+            return "queued"
+        return await self.push_tool.execute(
+            channel=channel,
+            chat_id=chat_id,
+            message=message,
+        )
+
+    def _ensure_send_success(self, result: Any) -> None:
+        text = str(result)
+        if result is True or text == "queued" or "已发送" in text:
+            return
+        raise RuntimeError(f"scheduler send failed: {text}")
+
+    def _resolve_outbound_bus(self) -> Any:
+        loop = (
+            self._agent_loop_provider()
+            if self._agent_loop_provider
+            else self.agent_loop
+        )
+        try:
+            attrs = vars(loop)
+        except TypeError:
+            return None
+        bus = attrs.get("bus")
+        publish = getattr(bus, "publish_outbound", None)
+        if callable(publish):
+            return bus
+        return None
 
     def _advance_every(self, job: ScheduledJob, after: datetime) -> datetime:
         """将 every job 的 fire_at 推进到 after 之后的下一个触发时间。"""

@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, TypeAlias, cast
@@ -582,10 +583,8 @@ class AgentLoop:
         preview = content[:60] + "..." if len(content) > 60 else content
         logger.info(f"Processing message from {msg.channel}: {preview}")
 
-        # 2. 再进入 busy 状态并执行核心处理。
-        if self._processing_state:
-            self._processing_state.enter(key)
-        try:
+        # 2. 再进入会话级仲裁并执行核心处理。
+        async with self._processing_scope(key):
             outbound = await self._core_runner.process(
                 msg,
                 key,
@@ -593,12 +592,34 @@ class AgentLoop:
             )
             if resumed_from_interrupt:
                 self._interrupt_states.pop(key, None)
-            return outbound
-        finally:
-            # 3. 最后无论成功失败都直接释放 busy 状态。
-            if self._processing_state:
-                self._processing_state.exit(key)
             _ = started
+            return outbound
+
+    @asynccontextmanager
+    async def _processing_scope(self, key: str) -> AsyncIterator[None]:
+        if self._processing_state is None:
+            yield
+            return
+
+        acquire = (
+            getattr(self._processing_state, "acquire", None)
+            if callable(getattr(type(self._processing_state), "acquire", None))
+            else None
+        )
+        if acquire is not None:
+            async with acquire(key):
+                yield
+            return
+
+        enter = getattr(self._processing_state, "enter", None)
+        exit_ = getattr(self._processing_state, "exit", None)
+        if callable(enter):
+            enter(key)
+        try:
+            yield
+        finally:
+            if callable(exit_):
+                exit_(key)
 
     async def process_direct(
         self,

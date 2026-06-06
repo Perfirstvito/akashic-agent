@@ -16,7 +16,7 @@ import logging
 import random as _random_module
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import TYPE_CHECKING, Any, AsyncContextManager, Callable, cast
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryRetrievalApi
@@ -27,7 +27,7 @@ from agent.provider import LLMProvider
 from agent.tool_hooks import ToolHook
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
-from agent.turns.outbound import PushToolOutboundPort
+from agent.turns.outbound import BusOutboundPort, PushToolOutboundPort
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from core.common.strategy_trace import build_strategy_trace_envelope
 from proactive_v2.anyaction import AnyActionGate, QuotaStore
@@ -77,6 +77,8 @@ class ProactiveLoop:
         light_provider: LLMProvider | None = None,
         light_model: str = "",
         passive_busy_fn: Callable[[str], bool] | None = None,
+        processing_acquire: Callable[[str], AsyncContextManager[None]] | None = None,
+        outbound_bus: Any | None = None,
         shared_tools: ToolRegistry | None = None,
         fitbit_enabled: bool = False,
         fitbit_url: str = "http://127.0.0.1:18765",
@@ -96,6 +98,8 @@ class ProactiveLoop:
         self._light_provider = light_provider or provider
         self._light_model = light_model or (config.model or model)
         self._passive_busy_fn = passive_busy_fn
+        self._processing_acquire = processing_acquire
+        self._outbound_bus = outbound_bus
         self._shared_tools = shared_tools
         self._tool_hooks = tool_hooks or []
         self._fitbit_enabled = bool(fitbit_enabled)
@@ -134,13 +138,18 @@ class ProactiveLoop:
         )
 
     def _build_turn_orchestrator(self) -> TurnOrchestrator:
+        outbound = (
+            BusOutboundPort(self._outbound_bus)
+            if self._outbound_bus is not None
+            else PushToolOutboundPort(self._push)
+        )
         return TurnOrchestrator(
             TurnOrchestratorDeps(
                 session=SessionServices(
                     session_manager=self._sessions,
                     presence=self._presence,
                 ),
-                outbound=PushToolOutboundPort(self._push),
+                outbound=outbound,
             )
         )
 
@@ -180,6 +189,7 @@ class ProactiveLoop:
                 state_store=self._state,
                 any_action_gate=self._anyaction,
                 passive_busy_fn=self._passive_busy_fn,
+                processing_acquire=self._processing_acquire,
                 turn_orchestrator=self._turn_orchestrator,
                 deduper=self._message_deduper,
                 rng=self._rng,

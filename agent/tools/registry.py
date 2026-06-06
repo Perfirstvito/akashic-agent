@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Iterable, Set as AbstractSet
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, cast
@@ -119,15 +120,20 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self._metadata: dict[str, ToolMeta] = {}
         self._documents: dict[str, ToolDocument] = {}
-        self._context: dict[str, str] = {}
+        self._context: ContextVar[dict[str, str]] = ContextVar(
+            f"tool_context:{id(self)}",
+            default={},
+        )
         self._backend: SearchBackend = backend or KeywordSearchBackend()
 
     def set_context(self, **kwargs: str) -> None:
         """设置当前会话上下文（channel、chat_id 等），供工具按需读取。"""
-        self._context.update(kwargs)
+        context = dict(self._context.get())
+        context.update(kwargs)
+        self._context.set(context)
 
     def get_context(self) -> dict[str, str]:
-        return self._context
+        return dict(self._context.get())
 
     def register(
         self,
@@ -242,7 +248,7 @@ class ToolRegistry:
         try:
             # 将会话上下文（channel、chat_id）作为低优先级默认值合并进 kwargs，
             # 工具可按需读取，不感知此机制的工具会直接忽略多余的 key。
-            merged: dict[str, Any] = {**self._context, **arguments}
+            merged: dict[str, Any] = {**self._context.get(), **arguments}
             if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
                 merged.pop(_PROGRESS_DESCRIPTION_FIELD, None)
             return await tool.execute(**merged)

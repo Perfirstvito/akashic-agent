@@ -22,10 +22,12 @@ from __future__ import annotations
 import json
 import logging
 import random as _random_module
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha1
-from typing import Any, Awaitable, Callable, cast
+from typing import Any, AsyncContextManager, Awaitable, Callable, cast
 
 from agent.prompting import (
     PromptSectionRender,
@@ -266,6 +268,7 @@ class ProactiveTurnPipelineDeps:
     any_action_gate: Any | None
     last_user_at_fn: Callable[[], datetime | None]
     passive_busy_fn: Callable[[str], bool] | None
+    processing_acquire: Callable[[str], AsyncContextManager[None]] | None
     turn_orchestrator: TurnOrchestrator | None
     deduper: Any | None
     tool_deps: ToolDeps
@@ -306,6 +309,7 @@ class ProactiveTurnPipeline:
         self._any_action_gate = deps.any_action_gate
         self._last_user_at_fn = deps.last_user_at_fn
         self._passive_busy_fn = deps.passive_busy_fn
+        self._processing_acquire = deps.processing_acquire
         self._turn_orchestrator = deps.turn_orchestrator
         self._deduper = deps.deduper
         self._tool_deps = deps.tool_deps
@@ -350,31 +354,36 @@ class ProactiveTurnPipeline:
             self._record_tick_log_finish(ctx, gate_exit=gate.reason)
             return gate.base_score
 
-        ctx.context_as_fallback_open = gate.context_as_fallback_open
-        self.last_ctx = ctx
-        self._record_tick_log_start(ctx)
+        async with self._processing_scope():
+            ctx.context_as_fallback_open = gate.context_as_fallback_open
+            self.last_ctx = ctx
+            self._record_tick_log_start(ctx)
 
-        # 2. Fetch — 外面有什么新鲜事？
-        feed = await self._fetch_pull(ctx)
-        if feed.drift_entered:
-            self._finalize_after_drift(ctx)
-            return feed.base_score
+            # 2. Fetch — 外面有什么新鲜事？
+            feed = await self._fetch_pull(ctx)
+            if feed.drift_entered:
+                self._finalize_after_drift(ctx)
+                return feed.base_score
 
-        # 3. Judge — LLM 评估哪些值得说
-        if feed.messages and ctx.terminal_action is None:
-            await self._judge_evaluate(ctx, feed.messages)
+            # 3. Judge — LLM 评估哪些值得说
+            if feed.messages and ctx.terminal_action is None:
+                await self._judge_evaluate(ctx, feed.messages)
 
-        # 3.5 LLM 判定 reply 时记录 anyaction（drift 路径在 _finalize_after_drift 中处理）。
-        if ctx.terminal_action == "reply" and self._any_action_gate is not None:
-            self._any_action_gate.record_action(now_utc=ctx.now_utc)
+            # 4. Resolve — 发还是不发？
+            decision = await self._resolve_decide(ctx)
 
-        # 4. Resolve — 发还是不发？
-        decision = await self._resolve_decide(ctx)
+            # 5. Deliver — 执行发送
+            score = await self._deliver_execute(ctx, decision)
+            ctx.content_store.clear()
+            return score
 
-        # 5. Deliver — 执行发送
-        score = await self._deliver_execute(ctx, decision)
-        ctx.content_store.clear()
-        return score
+    @asynccontextmanager
+    async def _processing_scope(self) -> AsyncIterator[None]:
+        if self._processing_acquire is None:
+            yield
+            return
+        async with self._processing_acquire(self._session_key):
+            yield
 
     # ── 1. Gate ───────────────────────────────────────────────────────
 
@@ -759,17 +768,24 @@ class ProactiveTurnPipeline:
     # ── 5. Deliver ────────────────────────────────────────────────────
 
     async def _deliver_execute(self, ctx: AgentTickContext, decision: ResolveResult) -> float | None:
-        """执行发送：记日志 → 通过 TurnOrchestrator 落会话、发消息、执行副作用。"""
-        # 5.1 先记 tick 日志。
-        self._record_tick_log_finish(ctx, result=decision.result)
+        """执行发送：通过 TurnOrchestrator 落会话、发消息、执行副作用 → 记日志。"""
         if self._turn_orchestrator is None:
             raise RuntimeError("proactive turn_orchestrator is required")
-        # 5.2 再统一交给 TurnOrchestrator。
-        await self._turn_orchestrator.handle_proactive_turn(
+
+        sent = await self._turn_orchestrator.handle_proactive_turn(
             result=decision.result,
             session_key=self._session_key,
             channel=str(self._cfg.default_channel or "").strip(),
             chat_id=str(self._cfg.default_chat_id or "").strip(),
+        )
+
+        if sent and decision.result.decision == "reply" and self._any_action_gate is not None:
+            self._any_action_gate.record_action(now_utc=ctx.now_utc)
+
+        self._record_tick_log_finish(
+            ctx,
+            result=decision.result,
+            dispatch_sent=sent,
         )
         return 0.0
 
@@ -777,7 +793,7 @@ class ProactiveTurnPipeline:
 
     def _finalize_after_drift(self, ctx: AgentTickContext) -> None:
         """drift 进入后跳过正常 post_loop，直接收尾。"""
-        if self._any_action_gate is not None:
+        if ctx.drift_message_sent and self._any_action_gate is not None:
             self._any_action_gate.record_action(now_utc=ctx.now_utc)
         logger.info(
             "[proactive_v2] drift entered, skipping normal post_loop message_sent=%s finished=%s",
@@ -1141,12 +1157,17 @@ class ProactiveTurnPipeline:
         *,
         gate_exit: str | None = None,
         result: TurnResult | None = None,
+        dispatch_sent: bool | None = None,
     ) -> None:
         decision = result.decision if result is not None else ctx.terminal_action
+        if result is not None and result.decision == "reply" and dispatch_sent is False:
+            decision = "send_failed"
         if ctx.drift_entered and result is None and decision is None:
             decision = "reply" if ctx.drift_message_sent else "skip"
         trace_extra = result.trace.extra if result is not None and result.trace is not None else {}
         skip_reason = str(trace_extra.get("skip_reason") or ctx.skip_reason or "")
+        if decision == "send_failed" and not skip_reason:
+            skip_reason = "send_failed"
         final_message = ""
         if result is not None and result.outbound is not None:
             final_message = str(result.outbound.content or "")
