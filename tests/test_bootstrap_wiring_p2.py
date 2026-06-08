@@ -9,12 +9,13 @@ from types import SimpleNamespace
 import pytest
 
 from agent.config import Config, DEFAULT_SOCKET
-from agent.config_models import Config as ConfigModel, WiringConfig
+from agent.config_models import Config as ConfigModel, MemoryConfig, WiringConfig
 from agent.lifecycle.facade import TurnLifecycle
 from agent.lifecycle.types import AfterStepCtx
 from agent.looping.interrupt import TurnInterruptState
 from agent.tools.registry import ToolRegistry
 from bootstrap.tools import _build_loop_deps, build_registered_tools
+from bootstrap.memory import ensure_memory_plugin_storage
 from bootstrap.wiring import (
     wire_turn_lifecycle,
     register_memory_plugin,
@@ -124,6 +125,21 @@ def test_config_load_reads_memory_engine_selector(tmp_path: Path):
 
     assert cfg.memory.enabled is True
     assert cfg.memory.engine == "memu"
+
+
+def test_akasha_memory_engine_selector_initializes_sidecar(tmp_path: Path):
+    cfg = ConfigModel(
+        provider="openai",
+        model="m",
+        api_key="k",
+        system_prompt="s",
+        memory=MemoryConfig(enabled=True, engine="akasha"),
+    )
+
+    initialized = ensure_memory_plugin_storage(cfg, tmp_path)
+
+    assert initialized == [(tmp_path / "memory" / "akasha.db", False)]
+    assert (tmp_path / "memory" / "akasha.db").exists()
 
 
 def test_config_load_ignores_wiring_memory_engine(tmp_path: Path):

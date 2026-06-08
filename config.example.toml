@@ -105,7 +105,7 @@ allow_from = []
 
 [memory]
 enabled = true
-# 语义记忆 engine 选择。留空等同 default。
+# 语义记忆 engine 选择。留空等同 default；可选 akasha 使用原始消息图扩散记忆。
 engine = ""
 
 [memory.embedding]
