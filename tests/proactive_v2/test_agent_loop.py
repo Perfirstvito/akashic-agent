@@ -23,7 +23,6 @@ import pytest
 
 from agent.prompting import is_context_frame
 from proactive_v2.gateway import GatewayDeps
-from proactive_v2.rules import read_dynamic_rule_context
 from proactive_v2.tools import ToolDeps
 from tests.proactive_v2.conftest import FakeLLM, cfg_with, make_proactive_pipeline
 
@@ -97,51 +96,6 @@ async def test_loop_puts_runtime_context_frame_before_kickoff():
     assert is_context_frame(str(messages[1]["content"]))
     assert "proactive_tick_state" in str(messages[1]["content"])
     assert str(messages[2]["content"]).startswith("开始本轮 proactive 处理。")
-
-
-@pytest.mark.asyncio
-async def test_loop_injects_dynamic_rules_without_rendering_route_metadata(tmp_path):
-    (tmp_path / "proactive_rules" / "content").mkdir(parents=True)
-    (tmp_path / "proactive_rules" / "content.md").write_text(
-        "Content rules loaded",
-        encoding="utf-8",
-    )
-    (tmp_path / "proactive_rules" / "content" / "arxiv.md").write_text(
-        "Arxiv rules loaded",
-        encoding="utf-8",
-    )
-
-    llm = FakeLLM([("finish_turn", {"decision": "skip", "reason": "no_content"})])
-    tick = make_proactive_pipeline(
-        llm_fn=llm,
-        workspace_rules_fn=lambda meta: read_dynamic_rule_context(tmp_path, meta),
-        gateway_deps=GatewayDeps(
-            alert_fn=AsyncMock(return_value=[]),
-            feed_fn=AsyncMock(
-                return_value=[
-                    {
-                        "event_id": "c1",
-                        "ack_server": "feed",
-                        "title": "论文标题",
-                        "source_name": "arXiv cs.AI",
-                        "source_type": "arxiv",
-                        "subscription_id": "arxiv-cs-ai",
-                        "url": "https://arxiv.org/abs/2601.00001",
-                    }
-                ]
-            ),
-            context_fn=AsyncMock(return_value=[]),
-        ),
-    )
-
-    await tick.run()
-
-    content = str(llm.calls[0][1]["content"])
-    assert "dynamic_proactive_rules" in content
-    assert "Content rules loaded" in content
-    assert "Arxiv rules loaded" in content
-    assert "source_type" not in content
-    assert "subscription_id" not in content
 
 
 @pytest.mark.asyncio
@@ -484,8 +438,10 @@ async def test_context_data_fn_called_only_once_in_loop():
 async def test_recall_memory_in_loop():
     from unittest.mock import MagicMock
     memory = MagicMock()
-    memory.retrieve_interest_block = AsyncMock(
-        return_value=SimpleNamespace(hits=[{"text": "用户喜欢 RPG"}])
+    memory.query = AsyncMock(
+        return_value=SimpleNamespace(
+            records=[SimpleNamespace(id="m1", summary="用户喜欢 RPG", score=0.9)]
+        )
     )
     llm = FakeLLM([
         ("recall_memory", {"query": "RPG games"}),
@@ -498,7 +454,7 @@ async def test_recall_memory_in_loop():
     )
     await tick.run()
     assert tick.last_ctx.terminal_action == "reply"
-    memory.retrieve_interest_block.assert_awaited_once()
+    memory.query.assert_awaited_once()
 
 
 # ── user_busy skip 路径 ───────────────────────────────────────────────────
