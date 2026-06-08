@@ -8,10 +8,14 @@ from __future__ import annotations
 import os
 import re
 import sys
-import tomllib
 import zlib
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 compatibility
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from agent.config_models import (
     ChannelsConfig,

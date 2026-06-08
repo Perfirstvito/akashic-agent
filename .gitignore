@@ -1,6 +1,7 @@
 # 敏感配置（本地填写，不提交）
 /config.json
 /config.toml
+plugins/*/config.local.toml
 
 # NcatBot 自动生成的配置文件
 config.yaml
@@ -21,7 +22,7 @@ package-lock.json
 frontend/dashboard/static/
 
 # Compiled plugin panel JS (auto-built from .ts at dashboard startup)
-plugins/*/dashboard_panel.js
+plugins/*/dashboard_panel*.js
 
 # 运行时产物
 logs/

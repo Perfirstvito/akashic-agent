@@ -639,6 +639,7 @@ async def test_before_reasoning_setup_calls_tools_set_context():
     call_kwargs = tools.set_context.call_args[1]
     assert call_kwargs["channel"] == "telegram"
     assert call_kwargs["chat_id"] == "123"
+    assert call_kwargs["current_timestamp"] == msg.timestamp.isoformat()
     assert "current_user_source_ref" in call_kwargs
 
     assert ctx.skill_names == ["search"]
