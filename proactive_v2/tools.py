@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from core.memory.engine import InterestRetrievalRequest
+from core.memory.engine import MemoryQuery
 from agent.prompting import is_context_frame
 from proactive_v2.context import AgentTickContext
 from proactive_v2.outbound_text import normalize_outbound_text
@@ -205,25 +205,35 @@ TERMINAL_TOOL_SCHEMAS: list[dict] = [
 
 async def _recall_memory(ctx: AgentTickContext, args: dict, *, memory) -> str:
     query = args["query"]
-    hits = await _retrieve_interest_hits(memory=memory, query=query)
+    hits = await _retrieve_interest_hits(memory=memory, query=query, timestamp=ctx.now_utc)
     if not hits:
         return json.dumps({"result": "", "hits": 0}, ensure_ascii=False)
     texts = [h.get("text", "") for h in hits if h.get("text")]
     return json.dumps({"result": "\n---\n".join(texts), "hits": len(hits)}, ensure_ascii=False)
 
 
-async def _retrieve_interest_hits(*, memory, query: str) -> list[dict]:
+async def _retrieve_interest_hits(*, memory, query: str, timestamp) -> list[dict]:
     if memory is None:
         return []
 
     retrieval_memory = cast("MemoryRetrievalApi", memory)
-    result = await retrieval_memory.retrieve_interest_block(
-        InterestRetrievalRequest(
-            query=query,
-            top_k=2,
+    result = await retrieval_memory.query(
+        MemoryQuery(
+            text=query,
+            intent="interest",
+            limit=2,
+            timestamp=timestamp,
         )
     )
-    return list(result.hits)
+    return [
+        {
+            "id": record.id,
+            "text": record.summary,
+            "summary": record.summary,
+            "score": record.score,
+        }
+        for record in result.records
+    ]
 
 
 def _valid_content_ids(ctx: AgentTickContext) -> set[str]:
