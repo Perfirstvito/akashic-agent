@@ -14,6 +14,7 @@ warnings.filterwarnings(
 
 import infra.channels.feishu_channel as feishu_module
 from infra.channels.feishu_channel import FeishuChannel
+from bus.events import OutboundMessage
 from bus.queue import MessageBus
 
 
@@ -72,3 +73,53 @@ async def test_feishu_post_send_falls_back_to_plain_text(feishu_channel, monkeyp
 
     assert [call["msg_type"] for call in calls] == ["post", "post", "post", "text"]
     assert json.loads(calls[-1]["content"]) == {"text": "# Title\n\nbody"}
+
+
+@pytest.mark.asyncio
+async def test_feishu_card_done_does_not_block_proactive_outbound(
+    feishu_channel,
+    monkeypatch,
+):
+    calls: list[dict[str, str]] = []
+
+    async def fake_send_with_retry(**kwargs):
+        calls.append(dict(kwargs))
+
+    monkeypatch.setattr(feishu_channel, "_send_with_retry", fake_send_with_retry)
+    feishu_channel._card_done.add("feishu:chat_id")
+
+    await feishu_channel._on_response(
+        OutboundMessage(
+            channel="feishu",
+            chat_id="chat_id",
+            content="proactive arxiv digest",
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["chat_id"] == "chat_id"
+
+
+@pytest.mark.asyncio
+async def test_feishu_card_done_still_blocks_passive_duplicate(
+    feishu_channel,
+    monkeypatch,
+):
+    calls: list[dict[str, str]] = []
+
+    async def fake_send_with_retry(**kwargs):
+        calls.append(dict(kwargs))
+
+    monkeypatch.setattr(feishu_channel, "_send_with_retry", fake_send_with_retry)
+    feishu_channel._card_done.add("feishu:chat_id")
+
+    await feishu_channel._on_response(
+        OutboundMessage(
+            channel="feishu",
+            chat_id="chat_id",
+            content="passive duplicate",
+            metadata={"streamed_reply": True},
+        )
+    )
+
+    assert calls == []

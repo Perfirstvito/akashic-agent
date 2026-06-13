@@ -54,7 +54,7 @@ class TurnOrchestrator:
                     channel=channel,
                     chat_id=chat_id,
                     content=content,
-                    metadata={},
+                    metadata={"source": result.trace.source if result.trace else "proactive"},
                     media=media,
                 )
             )

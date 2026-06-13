@@ -85,6 +85,7 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
         async def dispatch(self, outbound: OutboundDispatch) -> bool:
             order.append("dispatch")
             assert outbound.content == "hello"
+            assert outbound.metadata == {"source": "proactive"}
             return True
 
     presence = SimpleNamespace(record_proactive_sent=lambda _key: order.append("presence"))

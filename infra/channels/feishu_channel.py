@@ -820,7 +820,9 @@ class FeishuChannel:
         session_key = f"{_CHANNEL}:{msg.chat_id}"
 
         # 卡片流式活跃时，卡片本身就是输出，跳过单独的消息发送
-        if session_key in self._card_id or session_key in self._card_done:
+        if session_key in self._card_id:
+            return
+        if session_key in self._card_done and self._is_passive_turn_outbound(msg):
             return
 
         # 检查是否有正在进行的流式输出
@@ -856,6 +858,20 @@ class FeishuChannel:
                 if msg_type == "post"
                 else None
             ),
+        )
+
+    def _is_passive_turn_outbound(self, msg: OutboundMessage) -> bool:
+        metadata = msg.metadata or {}
+        if metadata.get("source") == "proactive":
+            return False
+        return any(
+            key in metadata
+            for key in (
+                "streamed_reply",
+                "tools_used",
+                "tool_chain",
+                "context_retry",
+            )
         )
 
     async def _send_with_retry(
