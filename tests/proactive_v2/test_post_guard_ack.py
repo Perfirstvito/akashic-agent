@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.core.proactive_turn import (
+    _build_proactive_source_refs,
     ack_discarded,
     ack_on_success,
     ack_post_guard_fail,
@@ -68,6 +69,71 @@ def test_delivery_key_fallback_to_message_when_no_cited():
     msg = "context only message"
     expected = sha1(msg[:500].encode()).hexdigest()[:16]
     assert build_delivery_key(_make_ctx(message=msg)) == expected
+
+
+def test_proactive_source_refs_from_cited_content_preserve_order_and_metadata():
+    ctx = AgentTickContext()
+    ctx.fetched_contents = [
+        {
+            "id": "p1",
+            "ack_server": "feed-mcp",
+            "title": "First Paper",
+            "source": "arXiv",
+            "url": "https://arxiv.org/abs/2601.00001",
+            "published_at": "2026-01-01T00:00:00Z",
+        },
+        {
+            "event_id": "p2",
+            "ack_server": "feed-mcp",
+            "title": "Second Paper",
+            "source_name": "arXiv",
+            "url": "https://arxiv.org/abs/2601.00002",
+        },
+    ]
+    ctx.fetched_alerts = [
+        {
+            "id": "a1",
+            "ack_server": "alert-mcp",
+            "title": "Alert",
+            "source_name": "monitor",
+        }
+    ]
+    ctx.cited_item_ids = ["feed-mcp:p2", "feed-mcp:p1", "alert-mcp:a1"]
+
+    refs = _build_proactive_source_refs(ctx)
+
+    assert refs == [
+        {
+            "id": "feed-mcp:p2",
+            "kind": "content",
+            "ack_server": "feed-mcp",
+            "event_id": "p2",
+            "source_name": "arXiv",
+            "source": "arXiv",
+            "title": "Second Paper",
+            "url": "https://arxiv.org/abs/2601.00002",
+        },
+        {
+            "id": "feed-mcp:p1",
+            "kind": "content",
+            "ack_server": "feed-mcp",
+            "event_id": "p1",
+            "source_name": "arXiv",
+            "source": "arXiv",
+            "title": "First Paper",
+            "url": "https://arxiv.org/abs/2601.00001",
+            "published_at": "2026-01-01T00:00:00Z",
+        },
+        {
+            "id": "alert-mcp:a1",
+            "kind": "alert",
+            "ack_server": "alert-mcp",
+            "event_id": "a1",
+            "source_name": "monitor",
+            "source": "monitor",
+            "title": "Alert",
+        },
+    ]
 
 
 def test_delivery_key_message_truncated_to_500():

@@ -138,6 +138,90 @@ def _build_delivery_refs(ctx: AgentTickContext) -> list[str]:
     return sorted(set(refs))
 
 
+def _compound_source_key(item: dict[str, Any]) -> str:
+    raw_id = str(item.get("event_id") or item.get("id") or "").strip()
+    ack_server = str(item.get("ack_server") or "").strip()
+    if not raw_id:
+        return ""
+    if ":" in raw_id:
+        prefix, _, _ = raw_id.partition(":")
+        if not ack_server or prefix == ack_server:
+            return raw_id
+    if ack_server:
+        return f"{ack_server}:{raw_id}"
+    return raw_id
+
+
+def _source_ref_event_id(item: dict[str, Any], key: str) -> str:
+    explicit = str(item.get("event_id") or "").strip()
+    if explicit:
+        return explicit
+    ack_server = str(item.get("ack_server") or "").strip()
+    raw_id = str(item.get("id") or "").strip()
+    if ack_server and raw_id.startswith(f"{ack_server}:"):
+        return raw_id.split(":", 1)[1]
+    if key.startswith(f"{ack_server}:"):
+        return key.split(":", 1)[1]
+    return raw_id or key
+
+
+def _source_ref_from_item(
+    key: str,
+    item: dict[str, Any],
+    *,
+    kind: str,
+) -> dict[str, str]:
+    ref: dict[str, str] = {"id": key, "kind": kind}
+    event_id = _source_ref_event_id(item, key)
+    if event_id:
+        ref["event_id"] = event_id
+    field_map = {
+        "ack_server": ("ack_server",),
+        "source_name": ("source_name", "source"),
+        "source": ("source", "source_name"),
+        "title": ("title",),
+        "url": ("url",),
+        "published_at": ("published_at",),
+    }
+    for output_key, candidates in field_map.items():
+        for candidate in candidates:
+            value = str(item.get(candidate) or "").strip()
+            if value:
+                ref[output_key] = value
+                break
+    return ref
+
+
+def _build_proactive_source_refs(ctx: AgentTickContext) -> list[dict[str, str]]:
+    if not ctx.cited_item_ids:
+        return []
+
+    content_map = {
+        key: item
+        for item in ctx.fetched_contents
+        if (key := _compound_source_key(item))
+    }
+    alert_map = {
+        key: item
+        for item in ctx.fetched_alerts
+        if (key := _compound_source_key(item))
+    }
+
+    refs: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for key in ctx.cited_item_ids:
+        if key in seen:
+            continue
+        seen.add(key)
+        if key in content_map:
+            refs.append(_source_ref_from_item(key, content_map[key], kind="content"))
+        elif key in alert_map:
+            refs.append(_source_ref_from_item(key, alert_map[key], kind="alert"))
+        else:
+            refs.append({"id": key, "kind": "unknown"})
+    return refs
+
+
 def build_delivery_key(ctx: AgentTickContext) -> str:
     refs = _build_delivery_refs(ctx)
     if refs and any(not ref.startswith("id:") for ref in refs):
@@ -717,6 +801,7 @@ class ProactiveTurnPipeline:
                 )
 
         # 4.4 两层 guard 都通过 → 构建 send 结果。
+        source_refs = _build_proactive_source_refs(ctx)
         send_result = TurnResult(
             decision="reply",
             outbound=TurnOutbound(session_key=self._session_key, content=ctx.final_message),
@@ -727,6 +812,7 @@ class ProactiveTurnPipeline:
                     "steps_taken": ctx.steps_taken,
                     "skip_reason": "",
                     "state_summary_tag": "none",
+                    "source_refs": source_refs,
                 },
             ),
             success_side_effects=[

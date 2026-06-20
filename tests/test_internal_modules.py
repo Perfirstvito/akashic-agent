@@ -190,6 +190,43 @@ async def test_consolidation_helpers(
     assert empty.last_draft is None
 
 
+def test_consolidation_conversation_skips_proactive_source_refs():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "推送了两篇论文",
+            "timestamp": "2026-06-20T10:30:00",
+            "proactive": True,
+            "source_refs": [
+                {
+                    "id": "feed:p1",
+                    "source_name": "arXiv",
+                    "title": "First Paper",
+                    "url": "https://arxiv.org/abs/2601.00001",
+                },
+                {
+                    "id": "feed:p2",
+                    "source_name": "arXiv",
+                    "title": "Second Paper",
+                    "url": "https://arxiv.org/abs/2601.00002",
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": "下面那篇给我讲讲",
+            "timestamp": "2026-06-20T10:31:00",
+        },
+    ]
+
+    conversation = _format_conversation_for_consolidation(messages)
+
+    assert "下面那篇给我讲讲" in conversation
+    assert "First Paper" not in conversation
+    assert "Second Paper" not in conversation
+    assert "arxiv.org" not in conversation
+
+
 @pytest.mark.asyncio
 async def test_post_response_worker_invalidation_paths():
     memorizer = SimpleNamespace(

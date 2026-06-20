@@ -111,6 +111,14 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
                     "tools_used": ["web_search"],
                     "tool_chain": [{"text": "", "calls": []}],
                     "steps_taken": 2,
+                    "source_refs": [
+                        {
+                            "id": "feed:1",
+                            "source_name": "arXiv",
+                            "title": "Paper",
+                            "url": "https://arxiv.org/abs/2601.00001",
+                        }
+                    ],
                 },
             ),
             side_effects=[_Effect("side_effect")],
@@ -125,6 +133,14 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     assert sent is True
     assert session.messages[0]["proactive"] is True
     assert session.messages[0]["content"] == "hello"
+    assert session.messages[0]["source_refs"] == [
+        {
+            "id": "feed:1",
+            "source_name": "arXiv",
+            "title": "Paper",
+            "url": "https://arxiv.org/abs/2601.00001",
+        }
+    ]
     assert order == ["side_effect", "dispatch", "persist", "presence", "success_effect"]
 
 

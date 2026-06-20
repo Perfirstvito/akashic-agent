@@ -52,11 +52,17 @@ def _append_proactive_meta(content: str, msg: dict[str, Any]) -> str:
     source_refs = msg.get("source_refs") or []
     if isinstance(source_refs, list) and source_refs:
         meta_lines.append("sources:")
-        for raw in source_refs[:1]:
+        for index, raw in enumerate(source_refs, start=1):
             if not isinstance(raw, dict):
                 continue
+            source_id = str(raw.get("id", "") or raw.get("item_id", "") or "").strip()
+            source_name = str(
+                raw.get("source_name", "") or raw.get("source", "") or ""
+            ).strip()
             parts = [
-                str(raw.get("source_name", "") or "").strip(),
+                f"[{index}]",
+                source_id,
+                source_name,
                 str(raw.get("title", "") or "").strip(),
                 str(raw.get("url", "") or "").strip(),
             ]

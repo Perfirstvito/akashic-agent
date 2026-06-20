@@ -188,6 +188,40 @@ def test_session_get_history_replays_proactive_as_short_assistant_with_meta_fram
     assert "proactive_meta" in content
 
 
+def test_session_get_history_replays_all_proactive_source_refs_for_followup():
+    session = Session("cli:1")
+    session.add_message(
+        "assistant",
+        "推送了两篇论文",
+        proactive=True,
+        source_refs=[
+            {
+                "id": "feed:p1",
+                "source_name": "arXiv",
+                "title": "First Paper",
+                "url": "https://arxiv.org/abs/2601.00001",
+            },
+            {
+                "id": "feed:p2",
+                "source_name": "arXiv",
+                "title": "Second Paper",
+                "url": "https://arxiv.org/abs/2601.00002",
+            },
+        ],
+    )
+
+    history = session.get_history()
+
+    assert len(history) == 2
+    meta = str(history[1]["content"])
+    assert "feed:p1" in meta
+    assert "First Paper" in meta
+    assert "https://arxiv.org/abs/2601.00001" in meta
+    assert "feed:p2" in meta
+    assert "Second Paper" in meta
+    assert "https://arxiv.org/abs/2601.00002" in meta
+
+
 def test_session_get_history_allows_proactive_assistant_boundary():
     session = Session("cli:1")
     session.add_message("user", "old")
