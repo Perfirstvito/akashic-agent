@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agent.llm_json import load_json_object_loose
 from agent.memory import MemoryStore
+from agent.core.proactive_followup import format_proactive_followup_for_conversation
 from agent.prompting import is_context_frame
 from agent.provider import LLMProvider
 from bus.events_lifecycle import TurnCommitted
@@ -198,6 +199,9 @@ def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
         role = str(message.get("role", "")).upper()
         ts = str(message.get("timestamp", "?"))[:16]
         lines.append(f"[{ts}] {role}: {message['content']}")
+        if role == "USER":
+            for followup_line in format_proactive_followup_for_conversation(message):
+                lines.append(f"  {followup_line}")
     return "\n".join(lines)
 
 

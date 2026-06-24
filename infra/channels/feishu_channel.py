@@ -60,6 +60,7 @@ _CHANNEL = "feishu"
 
 # 去重滑动窗口大小
 _SEEN_MSG_MAXSIZE = 500
+_MESSAGE_TEXT_CACHE_MAXSIZE = 500
 
 # 重试配置
 _FEISHU_SEND_ATTEMPTS = 3
@@ -139,6 +140,7 @@ class FeishuChannel:
         event_bus: EventBus | None = None,
         interrupt_controller: InterruptController | None = None,
         enable_thinking: bool = False,
+        session_manager: Any | None = None,
     ) -> None:
         self._app_id = app_id
         self._app_secret = app_secret
@@ -146,6 +148,7 @@ class FeishuChannel:
         self._allow_from = set(allow_from) if allow_from else set()
         self._interrupt_controller = interrupt_controller
         self._thinking_enabled = enable_thinking
+        self._session_manager = session_manager
 
         # HTTP 客户端
         self._http = httpx.AsyncClient(timeout=30.0)
@@ -163,6 +166,9 @@ class FeishuChannel:
         self._seen_message_ids: list[str] = []
         self._dedup_state_path = _get_hermes_home() / "feishu_seen_message_ids.json"
         self._load_seen_message_ids()
+        self._message_text_cache: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+        self._message_text_cache_path = _get_hermes_home() / "feishu_message_text_cache.json"
+        self._load_message_text_cache()
 
         # ── Reaction 反馈 ────────────────────────────────────────────────
         # message_id → reaction_id（用于完成后清除/替换 reaction）
@@ -187,6 +193,7 @@ class FeishuChannel:
         self._card_last_think_len: dict[str, int] = {}    # session_key → 上次推送时的思考长度
         self._card_last_reply_len: dict[str, int] = {}    # session_key → 上次推送时的回复长度
         self._card_done: set[str] = set()             # 已用卡片回复过的 session_key
+        self._card_message_ids: dict[str, str] = {}   # card_id → message_id（用于回复上下文缓存）
 
         # 订阅事件总线
         if event_bus is not None:
@@ -225,6 +232,127 @@ class FeishuChannel:
             self._seen_message_ids.pop(0)
         self._save_seen_message_ids()
         return False
+
+    def _load_message_text_cache(self) -> None:
+        """加载最近消息文本缓存，用于还原用户回复的历史/卡片消息。"""
+        try:
+            if not self._message_text_cache_path.exists():
+                return
+            data = json.loads(self._message_text_cache_path.read_text(encoding="utf-8"))
+            items = data.get("items", [])
+            if not isinstance(items, list):
+                return
+            for item in items[-_MESSAGE_TEXT_CACHE_MAXSIZE:]:
+                if not isinstance(item, dict):
+                    continue
+                message_id = str(item.get("message_id") or "")
+                if not message_id:
+                    continue
+                self._message_text_cache[message_id] = {
+                    "text": str(item.get("text") or ""),
+                    "sender": str(item.get("sender") or ""),
+                    "msg_type": str(item.get("msg_type") or ""),
+                }
+        except Exception as e:
+            logger.warning("[feishu] 加载消息文本缓存失败: %s", e)
+            self._message_text_cache.clear()
+
+    def _save_message_text_cache(self) -> None:
+        try:
+            items = [
+                {"message_id": message_id, **data}
+                for message_id, data in self._message_text_cache.items()
+            ]
+            _atomic_json_write(self._message_text_cache_path, {"items": items})
+        except Exception as e:
+            logger.warning("[feishu] 保存消息文本缓存失败: %s", e)
+
+    def _cache_message_text(
+        self,
+        message_id: str,
+        text: str,
+        *,
+        sender: str = "",
+        msg_type: str = "",
+        session_key: str = "",
+        session_message_id: str = "",
+    ) -> None:
+        message_id = str(message_id or "")
+        text = str(text or "").strip()
+        if not message_id or not text:
+            return
+        self._message_text_cache[message_id] = {
+            "text": text,
+            "sender": sender,
+            "msg_type": msg_type,
+        }
+        self._message_text_cache.move_to_end(message_id)
+        while len(self._message_text_cache) > _MESSAGE_TEXT_CACHE_MAXSIZE:
+            self._message_text_cache.popitem(last=False)
+        self._save_message_text_cache()
+        self._remember_channel_message_ref(
+            message_id=message_id,
+            text=text,
+            sender=sender,
+            msg_type=msg_type,
+            session_key=session_key,
+            session_message_id=session_message_id,
+        )
+
+    def _get_cached_message_text(self, message_id: str) -> dict[str, Any] | None:
+        stored = self._get_channel_message_ref(message_id)
+        if stored:
+            return stored
+        cached = self._message_text_cache.get(str(message_id or ""))
+        if cached:
+            self._message_text_cache.move_to_end(str(message_id))
+        return cached
+
+    def _remember_channel_message_ref(
+        self,
+        *,
+        message_id: str,
+        text: str,
+        sender: str = "",
+        msg_type: str = "",
+        session_key: str = "",
+        session_message_id: str = "",
+    ) -> None:
+        remember = getattr(self._session_manager, "remember_channel_message_ref", None)
+        if not callable(remember):
+            return
+        try:
+            remember(
+                channel=_CHANNEL,
+                channel_message_id=message_id,
+                session_key=session_key,
+                session_message_id=session_message_id,
+                sender=sender,
+                msg_type=msg_type,
+                text=text,
+            )
+        except Exception as e:
+            logger.warning("[feishu] 保存消息引用索引失败 message_id=%s: %s", message_id, e)
+
+    def _get_channel_message_ref(self, message_id: str) -> dict[str, Any] | None:
+        get_ref = getattr(self._session_manager, "get_channel_message_ref", None)
+        if not callable(get_ref):
+            return None
+        try:
+            ref = get_ref(channel=_CHANNEL, channel_message_id=str(message_id or ""))
+        except Exception as e:
+            logger.warning("[feishu] 读取消息引用索引失败 message_id=%s: %s", message_id, e)
+            return None
+        if not isinstance(ref, dict):
+            return None
+        text = str(ref.get("text") or "").strip()
+        if not text:
+            return None
+        return {
+            "text": text,
+            "sender": str(ref.get("sender") or ""),
+            "msg_type": str(ref.get("msg_type") or ""),
+        }
 
     # ── Sender 名字缓存 ──────────────────────────────────────────────────────
 
@@ -675,7 +803,7 @@ class FeishuChannel:
             except (ValueError, TypeError):
                 pass
 
-        # 获取文本内容（支持 post 等富文本消息）
+        # 获取文本内容（支持 post/interactive 等富文本消息）
         text = self._extract_text_content(msg_type, content)
         if not text and msg_type == "text":
             return
@@ -706,6 +834,14 @@ class FeishuChannel:
         logger.info(
             f"[feishu] 收到消息 chat_id={chat_id} "
             f"sender_id={sender_id} msg_type={msg_type} content={text[:50]!r}..."
+        )
+
+        self._cache_message_text(
+            message_id,
+            text,
+            sender=sender_nickname or sender_id,
+            msg_type=msg_type,
+            session_key=f"{_CHANNEL}:{chat_id}",
         )
 
         # 如果是图片类型，下载到本地缓存（Core 管线会自动 base64 编码发送给 VL 模型）
@@ -742,6 +878,8 @@ class FeishuChannel:
             else:
                 logger.warning(f"[feishu] 添加 SMILE reaction 失败 message_id={message_id}")
 
+        reply_meta = await self._build_reply_context_metadata(message)
+
         await self._bus.publish_inbound(
             InboundMessage(
                 channel=_CHANNEL,
@@ -753,6 +891,7 @@ class FeishuChannel:
                     "sender_name": sender_nickname,
                     "message_id": message_id,
                     "msg_type": msg_type,
+                    **reply_meta,
                 },
             )
         )
@@ -763,6 +902,8 @@ class FeishuChannel:
             return str(content.get("text") or "")
         if msg_type == "post":
             return self._parse_post_content(content)
+        if msg_type == "interactive":
+            return self._parse_interactive_content(content)
         if msg_type == "image":
             return "[图片]"
         if msg_type in ("file", "audio", "media"):
@@ -776,6 +917,153 @@ class FeishuChannel:
             return f"[转发消息: {title}]" if title else "[转发消息]"
         # 回退：尝试提取 text 或 content 字段
         return content.get("text") or content.get("content") or ""
+
+    def _parse_interactive_content(self, content: dict[str, Any]) -> str:
+        """从飞书卡片消息中提取可读文本。"""
+        direct_text = content.get("text") or content.get("content")
+        if direct_text:
+            return str(direct_text)
+
+        card = content
+        data = content.get("data")
+        if isinstance(data, dict):
+            card_json = data.get("card_json") or data.get("card")
+            if isinstance(card_json, str):
+                try:
+                    card = json.loads(card_json)
+                except Exception:
+                    card = data
+            elif isinstance(card_json, dict):
+                card = card_json
+            else:
+                card = data
+
+        parts: list[str] = []
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                tag = str(value.get("tag") or "")
+                if tag in {"plain_text", "markdown", "text", "lark_md"}:
+                    text = value.get("content") or value.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+                for key, child in value.items():
+                    if key in {"content", "text"} and isinstance(child, str):
+                        continue
+                    walk(child)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        walk(card)
+        text = "\n".join(dict.fromkeys(parts)).strip()
+        return text or "[卡片消息]"
+
+    def _reply_target_message_id(self, message: dict[str, Any]) -> str:
+        """提取飞书回复目标。通常 parent_id 是直接被回复消息，root_id 是线程根。"""
+        for key in ("parent_id", "root_id", "reply_to", "thread_id"):
+            value = message.get(key)
+            if value:
+                return str(value)
+        mentions = message.get("mentions")
+        if isinstance(mentions, list):
+            for mention in mentions:
+                if not isinstance(mention, dict):
+                    continue
+                for key in ("message_id", "id"):
+                    value = mention.get(key)
+                    if value:
+                        return str(value)
+        return ""
+
+    async def _fetch_message_text(self, message_id: str) -> dict[str, Any] | None:
+        cached = self._get_cached_message_text(message_id)
+        if cached:
+            return cached
+        if not message_id:
+            return None
+        try:
+            token = await self._get_access_token()
+            resp = await self._http.get(
+                f"{_FEISHU_API_BASE}/open-apis/im/v1/messages/{message_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "[feishu] 拉取被回复消息失败 status=%d message_id=%s body=%s",
+                    resp.status_code,
+                    message_id,
+                    resp.text[:300],
+                )
+                return None
+            data = resp.json()
+            if data.get("code", 0) != 0:
+                logger.warning(
+                    "[feishu] 拉取被回复消息 API 错误 code=%s msg=%s message_id=%s",
+                    data.get("code"),
+                    data.get("msg", ""),
+                    message_id,
+                )
+                return None
+            item = data.get("data", {}).get("item") or data.get("data", {}).get("message") or data.get("data", {})
+            if not isinstance(item, dict):
+                return None
+            content_raw = item.get("content", "{}")
+            try:
+                content = json.loads(content_raw) if isinstance(content_raw, str) else content_raw
+            except Exception:
+                content = {}
+            if not isinstance(content, dict):
+                content = {}
+            msg_type = str(item.get("message_type") or "text")
+            text = self._extract_text_content(msg_type, content).strip()
+            sender = self._sender_label_from_message(item)
+            if text:
+                self._cache_message_text(message_id, text, sender=sender, msg_type=msg_type)
+                return {"text": text, "sender": sender, "msg_type": msg_type}
+        except Exception as e:
+            logger.warning("[feishu] 拉取被回复消息异常 message_id=%s: %s", message_id, e)
+        return None
+
+    def _sender_label_from_message(self, message: dict[str, Any]) -> str:
+        sender = message.get("sender") or {}
+        if not isinstance(sender, dict):
+            return ""
+        for key in ("sender_nickname", "name"):
+            value = sender.get(key)
+            if value:
+                return str(value)
+        sender_id = sender.get("sender_id")
+        if isinstance(sender_id, dict):
+            return str(sender_id.get("open_id") or sender_id.get("user_id") or "")
+        return ""
+
+    async def _build_reply_context_metadata(
+        self,
+        message: dict[str, Any],
+    ) -> dict[str, str]:
+        reply_message_id = self._reply_target_message_id(message)
+        if not reply_message_id:
+            return {}
+
+        reply_data = await self._fetch_message_text(reply_message_id)
+        reply_meta = {"reply_to_message_id": reply_message_id}
+        if not reply_data:
+            return reply_meta
+
+        reply_text = str(reply_data.get("text") or "").strip()
+        if not reply_text:
+            return reply_meta
+        sender_label = str(reply_data.get("sender") or "").strip() or "未知发送者"
+        reply_meta["reply_to_sender"] = sender_label
+        reply_meta["reply_to_msg_type"] = str(reply_data.get("msg_type") or "")
+        reply_meta["reply_context_text"] = reply_text
+        reply_meta["reply_context_hint"] = (
+            "【你正在回复一条历史消息】\n"
+            f"被回复消息（来自 {sender_label}）：\n"
+            f"{reply_text}"
+        ).strip()
+        return reply_meta
 
     def _parse_post_content(self, content: dict[str, Any]) -> str:
         """解析飞书 post 类型的富文本内容"""
@@ -847,7 +1135,7 @@ class FeishuChannel:
         else:
             msg_type, content_payload = self._detect_msg_type(msg.content)
 
-        await self._send_with_retry(
+        sent_response = await self._send_with_retry(
             chat_id=msg.chat_id,
             msg_type=msg_type,
             content_payload=content_payload,
@@ -859,6 +1147,15 @@ class FeishuChannel:
                 else None
             ),
         )
+        sent_message_id = self._message_id_from_response(sent_response)
+        if sent_message_id:
+            self._cache_message_text(
+                sent_message_id,
+                msg.content,
+                sender="Akashic",
+                msg_type=msg_type,
+                session_key=f"{_CHANNEL}:{msg.chat_id}",
+            )
 
     def _is_passive_turn_outbound(self, msg: OutboundMessage) -> bool:
         metadata = msg.metadata or {}
@@ -884,16 +1181,15 @@ class FeishuChannel:
         sent_message_id: str | None = None,
         fallback_msg_type: str | None = None,
         fallback_content_payload: str | None = None,
-    ) -> None:
+    ) -> Any:
         """发送消息，带重试和 reply 回退机制"""
         try:
-            await self._send_with_retry_once(
+            return await self._send_with_retry_once(
                 chat_id=chat_id,
                 msg_type=msg_type,
                 content_payload=content_payload,
                 reply_to=reply_to,
             )
-            return
         except Exception as primary_error:
             if (
                 fallback_msg_type
@@ -907,13 +1203,12 @@ class FeishuChannel:
                     primary_error,
                 )
                 try:
-                    await self._send_with_retry_once(
+                    return await self._send_with_retry_once(
                         chat_id=chat_id,
                         msg_type=fallback_msg_type,
                         content_payload=fallback_content_payload,
                         reply_to=None,
                     )
-                    return
                 except Exception as fallback_error:
                     raise FeishuSendError(
                         "飞书消息发送失败，降级纯文本后仍失败",
@@ -931,7 +1226,7 @@ class FeishuChannel:
         msg_type: str,
         content_payload: str,
         reply_to: str | None = None,
-    ) -> None:
+    ) -> Any:
         last_error: Exception | None = None
         effective_reply_to = reply_to
 
@@ -959,7 +1254,7 @@ class FeishuChannel:
                             reply_to=None,
                         )
                 if self._response_succeeded(response):
-                    return
+                    return response
                 last_error = self._response_error(response)
             except Exception as exc:
                 last_error = exc
@@ -974,6 +1269,26 @@ class FeishuChannel:
         if last_error is not None:
             raise last_error
         raise FeishuSendError("飞书消息发送失败：无响应")
+
+    def _message_id_from_response(self, response: Any) -> str:
+        data = getattr(response, "data", None)
+        if not isinstance(data, dict):
+            return ""
+        return self._message_id_from_response_data(data)
+
+    def _message_id_from_response_data(self, data: dict[str, Any]) -> str:
+        payload = data.get("data")
+        if isinstance(payload, dict):
+            for key in ("message_id", "messageId", "id"):
+                value = payload.get(key)
+                if value:
+                    return str(value)
+            message = payload.get("message")
+            if isinstance(message, dict):
+                value = message.get("message_id") or message.get("id")
+                if value:
+                    return str(value)
+        return str(data.get("message_id") or data.get("id") or "")
 
     def _response_succeeded(self, response: Any) -> bool:
         """检查飞书 API 响应是否成功"""
@@ -1133,7 +1448,14 @@ class FeishuChannel:
             logger.warning(f"[feishu] 创建卡片异常: {e}")
             return None
 
-    async def _send_card_message(self, chat_id: str, card_id: str, reply_to: str | None = None) -> Any:
+    async def _send_card_message(
+        self,
+        chat_id: str,
+        card_id: str,
+        reply_to: str | None = None,
+        *,
+        session_key: str = "",
+    ) -> Any:
         """发送卡片消息。有 reply_to 时走 Reply 端点（显示回复横条），否则走 Create 端点。"""
         token = await self._get_access_token()
         content = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
@@ -1184,6 +1506,17 @@ class FeishuChannel:
                     "[feishu] 发送卡片消息 API 错误 code=%s msg=%s reply_to=%s",
                     code, data.get("msg", ""), reply_to,
                 )
+            else:
+                message_id = self._message_id_from_response_data(data)
+                if message_id:
+                    self._card_message_ids[card_id] = message_id
+                    self._cache_message_text(
+                        message_id,
+                        self._render_card_content(session_key) if session_key else "[卡片消息]",
+                        sender="Akashic",
+                        msg_type="interactive",
+                        session_key=session_key,
+                    )
         return resp
 
     async def _update_element_content(self, card_id: str, element_id: str, content: str, seq: int) -> bool:
@@ -1309,6 +1642,7 @@ class FeishuChannel:
                     session_key.split(":", 1)[1] if ":" in session_key else session_key,
                     card_id,
                     reply_to=reply_to,
+                    session_key=session_key,
                 )
                 logger.debug(f"[feishu] 卡片消息已发送 card_id={card_id}")
                 return
@@ -1536,11 +1870,21 @@ class FeishuChannel:
             if event.assistant_response and not self._card_reply_buf.get(session_key):
                 self._card_reply_buf[session_key] = event.assistant_response
             await self._push_card_update(session_key, finalize=True)
+            card_message_id = self._card_message_ids.get(card_id)
+            if card_message_id:
+                self._cache_message_text(
+                    card_message_id,
+                    self._render_card_content(session_key, finalize=True),
+                    sender="Akashic",
+                    msg_type="interactive",
+                    session_key=session_key,
+                )
             # 标记：已用卡片回复，阻止后续 _on_response 重复发送
             self._card_done.add(session_key)
             # 清理卡片状态
             self._card_id.pop(session_key, None)
             self._card_seq.pop(session_key, None)
+            self._card_message_ids.pop(card_id, None)
             self._card_tool_states.pop(session_key, None)
             self._card_reply_buf.pop(session_key, None)
             self._card_thinking_buf.pop(session_key, None)

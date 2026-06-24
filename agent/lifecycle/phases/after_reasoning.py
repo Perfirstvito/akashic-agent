@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import logging
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
@@ -44,6 +45,16 @@ _OUTBOUND_METADATA_PREFIX = "outbound:metadata:"
 _OUTBOUND_MEDIA_PREFIX = "outbound:media:"
 _ASSISTANT_FIXED_FIELDS = {"tools_used", "tool_chain", "reasoning_content"}
 _USER_FIXED_FIELDS = {"media"}
+_USER_METADATA_PERSIST_FIELDS = {
+    "proactive_followup",
+    "proactive_followup_status",
+    "resolved_from_proactive_message_id",
+    "resolved_proactive_refs",
+}
+_OUTBOUND_INTERNAL_METADATA_FIELDS = {
+    "reply_context_text",
+    "reply_context_hint",
+}
 
 
 class _BuildAfterReasoningCtxModule:
@@ -72,7 +83,7 @@ class _BuildAfterReasoningCtxModule:
             streamed=turn_result.streamed,
             context_retry=dict(turn_result.context_retry),
             outbound_metadata={
-                **(msg.metadata or {}),
+                **_public_outbound_metadata(msg.metadata or {}),
                 **input.state.extra_metadata,
                 "tools_used": list(turn_result.tools_used),
                 "tool_chain": list(tool_chain),
@@ -122,9 +133,19 @@ class _PersistUserMessageModule:
         if isinstance(llm_user_content, (str, list)):
             user_kwargs["llm_user_content"] = llm_user_content
         llm_context_frame = ctx.context_retry.get("llm_context_frame")
-        if isinstance(llm_context_frame, str) and llm_context_frame.strip():
+        has_prompt_only_reply_context = bool(
+            str((msg.metadata or {}).get("reply_context_hint") or "").strip()
+        )
+        if (
+            not has_prompt_only_reply_context
+            and isinstance(llm_context_frame, str)
+            and llm_context_frame.strip()
+        ):
             user_kwargs["llm_context_frame"] = llm_context_frame
         user_kwargs.update(_collect_persist_user_slots(frame.slots))
+        for key in _USER_METADATA_PERSIST_FIELDS:
+            if key in msg.metadata:
+                user_kwargs[key] = copy.deepcopy(msg.metadata[key])
         session.add_message(
             "user",
             msg.content,
@@ -247,6 +268,14 @@ def default_after_reasoning_modules(
         AfterReasoningModules,
         topo_sort_modules(builtins + list(plugin_modules or [])),
     )
+
+
+def _public_outbound_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key not in _OUTBOUND_INTERNAL_METADATA_FIELDS
+    }
 
 
 def _collect_persist_assistant_slots(slots: dict[str, object]) -> dict[str, object]:

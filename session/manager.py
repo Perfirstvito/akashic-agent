@@ -504,3 +504,35 @@ class SessionManager:
         except Exception as e:
             logging.warning("Failed to read channel metadata for %s: %s", channel, e)
             return []
+
+    def remember_channel_message_ref(
+        self,
+        *,
+        channel: str,
+        channel_message_id: str,
+        session_key: str,
+        session_message_id: str = "",
+        sender: str = "",
+        msg_type: str = "",
+        text: str = "",
+    ) -> None:
+        self._store.upsert_channel_message_ref(
+            channel=channel,
+            channel_message_id=channel_message_id,
+            session_key=session_key,
+            session_message_id=session_message_id,
+            sender=sender,
+            msg_type=msg_type,
+            text=text,
+        )
+
+    def get_channel_message_ref(
+        self,
+        *,
+        channel: str,
+        channel_message_id: str,
+    ) -> dict[str, Any] | None:
+        return self._store.get_channel_message_ref(
+            channel=channel,
+            channel_message_id=channel_message_id,
+        )

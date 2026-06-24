@@ -53,6 +53,20 @@ class SessionStore:
                     UNIQUE (session_key, seq)
                 )
                 """)
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS channel_message_refs (
+                    channel            TEXT NOT NULL,
+                    channel_message_id TEXT NOT NULL,
+                    session_key        TEXT NOT NULL,
+                    session_message_id TEXT,
+                    sender             TEXT,
+                    msg_type           TEXT,
+                    text               TEXT,
+                    created_at         TEXT NOT NULL,
+                    updated_at         TEXT NOT NULL,
+                    PRIMARY KEY (channel, channel_message_id)
+                )
+                """)
             self._ensure_next_seq_values()
             self._ensure_fts()
             self._conn.commit()
@@ -657,6 +671,78 @@ class SessionStore:
         if extra:
             row.update(extra)
         return row
+
+    def upsert_channel_message_ref(
+        self,
+        *,
+        channel: str,
+        channel_message_id: str,
+        session_key: str,
+        session_message_id: str = "",
+        sender: str = "",
+        msg_type: str = "",
+        text: str = "",
+    ) -> None:
+        now = datetime.now().astimezone().isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO channel_message_refs (
+                    channel, channel_message_id, session_key, session_message_id,
+                    sender, msg_type, text, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(channel, channel_message_id) DO UPDATE SET
+                    session_key = excluded.session_key,
+                    session_message_id = COALESCE(NULLIF(excluded.session_message_id, ''), channel_message_refs.session_message_id),
+                    sender = COALESCE(NULLIF(excluded.sender, ''), channel_message_refs.sender),
+                    msg_type = COALESCE(NULLIF(excluded.msg_type, ''), channel_message_refs.msg_type),
+                    text = COALESCE(NULLIF(excluded.text, ''), channel_message_refs.text),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(channel),
+                    str(channel_message_id),
+                    str(session_key),
+                    str(session_message_id or ""),
+                    str(sender or ""),
+                    str(msg_type or ""),
+                    str(text or ""),
+                    now,
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+    def get_channel_message_ref(
+        self,
+        *,
+        channel: str,
+        channel_message_id: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT channel, channel_message_id, session_key, session_message_id,
+                       sender, msg_type, text, created_at, updated_at
+                FROM channel_message_refs
+                WHERE channel = ? AND channel_message_id = ?
+                """,
+                (str(channel), str(channel_message_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "channel": str(row["channel"]),
+            "channel_message_id": str(row["channel_message_id"]),
+            "session_key": str(row["session_key"]),
+            "session_message_id": str(row["session_message_id"] or ""),
+            "sender": str(row["sender"] or ""),
+            "msg_type": str(row["msg_type"] or ""),
+            "text": str(row["text"] or ""),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }
 
     def fetch_session_messages(self, session_key: str) -> list[dict[str, Any]]:
         with self._lock:

@@ -123,3 +123,118 @@ async def test_feishu_card_done_still_blocks_passive_duplicate(
     )
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_feishu_reply_stores_cached_card_message_as_metadata(feishu_channel, monkeypatch):
+    async def fake_add_reaction(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(feishu_channel, "_add_reaction", fake_add_reaction)
+    feishu_channel._cache_message_text(
+        "card-msg-1",
+        "这是上一条卡片里的最终回复",
+        sender="Akashic",
+        msg_type="interactive",
+    )
+
+    await feishu_channel._handle_message(
+        {
+            "sender": {
+                "sender_id": {"open_id": "user-1"},
+                "sender_nickname": "User",
+            },
+            "message": {
+                "chat_id": "chat-1",
+                "chat_type": "p2p",
+                "message_id": "msg-2",
+                "message_type": "text",
+                "parent_id": "card-msg-1",
+                "content": json.dumps({"text": "这里再解释一下"}),
+            },
+        }
+    )
+
+    inbound = await feishu_channel._bus.consume_inbound()
+    assert inbound.content == "这里再解释一下"
+    assert inbound.metadata["reply_to_message_id"] == "card-msg-1"
+    assert inbound.metadata["reply_to_msg_type"] == "interactive"
+    assert inbound.metadata["reply_context_text"] == "这是上一条卡片里的最终回复"
+    assert "被回复消息（来自 Akashic）" in inbound.metadata["reply_context_hint"]
+
+
+@pytest.mark.asyncio
+async def test_feishu_reply_uses_session_message_ref_without_short_cache(
+    feishu_channel,
+    monkeypatch,
+):
+    async def fake_add_reaction(*_args, **_kwargs):
+        return None
+
+    class RefStore:
+        def get_channel_message_ref(self, **kwargs):
+            assert kwargs == {
+                "channel": "feishu",
+                "channel_message_id": "old-card-msg",
+            }
+            return {
+                "text": "很久以前的卡片正文",
+                "sender": "Akashic",
+                "msg_type": "interactive",
+            }
+
+    monkeypatch.setattr(feishu_channel, "_add_reaction", fake_add_reaction)
+    feishu_channel._session_manager = RefStore()
+    feishu_channel._message_text_cache.clear()
+
+    await feishu_channel._handle_message(
+        {
+            "sender": {"sender_id": {"open_id": "user-1"}},
+            "message": {
+                "chat_id": "chat-1",
+                "chat_type": "p2p",
+                "message_id": "msg-3",
+                "message_type": "text",
+                "parent_id": "old-card-msg",
+                "content": json.dumps({"text": "继续这个"}),
+            },
+        }
+    )
+
+    inbound = await feishu_channel._bus.consume_inbound()
+    assert inbound.content == "继续这个"
+    assert inbound.metadata["reply_context_text"] == "很久以前的卡片正文"
+    assert inbound.metadata["reply_to_msg_type"] == "interactive"
+
+
+def test_feishu_extracts_interactive_card_text(feishu_channel):
+    text = feishu_channel._extract_text_content(
+        "interactive",
+        {
+            "data": {
+                "card_json": json.dumps(
+                    {
+                        "schema": "2.0",
+                        "body": {
+                            "elements": [
+                                {"tag": "markdown", "content": "卡片 Markdown 正文"},
+                                {
+                                    "tag": "collapsible_panel",
+                                    "header": {
+                                        "title": {
+                                            "tag": "plain_text",
+                                            "content": "思考过程",
+                                        }
+                                    },
+                                },
+                            ]
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            }
+        },
+    )
+
+    assert "卡片 Markdown 正文" in text
+    assert "思考过程" in text

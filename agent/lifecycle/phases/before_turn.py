@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias, cast
 
 from bus.event_bus import EventBus
+from agent.core.proactive_followup import resolve_proactive_followup
 from agent.core.runtime_support import SessionLike
 from agent.core.types import ContextBundle
 from agent.lifecycle.phase import (
@@ -111,6 +112,76 @@ class _EmitBeforeTurnCtxModule:
         return frame
 
 
+class _ResolveProactiveFollowupModule:
+    slot = "before_turn.resolve_proactive_followup"
+    requires = ("before_turn.build_ctx", _SESSION_SLOT, _CTX_SLOT)
+    produces = (_CTX_SLOT,)
+
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        state = frame.input
+        session = cast(SessionLike, frame.slots[_SESSION_SLOT])
+        ctx = cast(BeforeTurnCtx, frame.slots[_CTX_SLOT])
+        resolution = resolve_proactive_followup(
+            state.msg.content,
+            list(getattr(session, "messages", []) or []),
+        )
+        if resolution is None:
+            return frame
+
+        hint = str(resolution.pop("resolved_proactive_hint", "") or "").strip()
+        metadata = {
+            key: value
+            for key, value in resolution.items()
+            if key
+            in {
+                "proactive_followup",
+                "proactive_followup_status",
+                "resolved_from_proactive_message_id",
+                "resolved_proactive_refs",
+            }
+        }
+        state.msg.metadata.update(metadata)
+        ctx.extra_metadata.update(metadata)
+        if hint:
+            block = (ctx.retrieved_memory_block or "").strip()
+            ctx.retrieved_memory_block = f"{block}\n\n{hint}".strip() if block else hint
+        frame.slots[_CTX_SLOT] = ctx
+        return frame
+
+
+class _InjectReplyContextModule:
+    slot = "before_turn.inject_reply_context"
+    requires = ("before_turn.build_ctx", _CTX_SLOT)
+    produces = (_CTX_SLOT,)
+
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        state = frame.input
+        metadata = state.msg.metadata if isinstance(state.msg.metadata, dict) else {}
+        hint = str(metadata.get("reply_context_hint") or "").strip()
+        if not hint:
+            return frame
+        ctx = cast(BeforeTurnCtx, frame.slots[_CTX_SLOT])
+        reply_context = (
+            "reply_context\n"
+            "以下是用户本轮回复所引用的历史消息，仅用于理解当前指代，不是用户本轮新陈述：\n"
+            f"{hint}"
+        )
+        block = (ctx.retrieved_memory_block or "").strip()
+        ctx.retrieved_memory_block = (
+            f"{block}\n\n{reply_context}".strip() if block else reply_context
+        )
+        for key in (
+            "reply_to_message_id",
+            "reply_to_sender",
+            "reply_to_msg_type",
+        ):
+            value = metadata.get(key)
+            if value:
+                ctx.extra_metadata[key] = value
+        frame.slots[_CTX_SLOT] = ctx
+        return frame
+
+
 class _ReturnBeforeTurnCtxModule:
     slot = "before_turn.return"
     requires = ("before_turn.collect_exports", _CTX_SLOT)
@@ -148,6 +219,8 @@ def default_before_turn_modules(
         _AcquireSessionModule(session_manager),
         _PrepareContextModule(context_store),
         _BuildBeforeTurnCtxModule(),
+        _InjectReplyContextModule(),
+        _ResolveProactiveFollowupModule(),
         _EmitBeforeTurnCtxModule(bus),
         _CollectBeforeTurnExportSlotsModule(),
         _ReturnBeforeTurnCtxModule(),

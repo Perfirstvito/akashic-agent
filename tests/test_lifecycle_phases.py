@@ -301,6 +301,103 @@ async def test_before_turn_setup_fills_turn_state():
 
 
 @pytest.mark.asyncio
+async def test_before_turn_resolves_proactive_followup_into_context_and_metadata():
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session.messages = [
+        {
+            "id": "telegram:123:7",
+            "role": "assistant",
+            "content": "推送了两篇论文",
+            "proactive": True,
+            "source_refs": [
+                {
+                    "id": "feed:p1",
+                    "kind": "content",
+                    "source_name": "arXiv",
+                    "title": "First Paper",
+                    "url": "https://arxiv.org/abs/2601.00001",
+                },
+                {
+                    "id": "feed:p2",
+                    "kind": "content",
+                    "source_name": "arXiv",
+                    "title": "Second Paper",
+                    "url": "https://arxiv.org/abs/2601.00002",
+                },
+            ],
+        }
+    ]
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    bundle = ContextBundle(retrieved_memory_block="memory block")
+    ctx_store = SimpleNamespace(prepare=AsyncMock(return_value=bundle))
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = _inbound()
+    msg.content = "下面那篇给我讲讲"
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+
+    ctx = await phase.run(state)
+
+    assert msg.metadata["proactive_followup"] is True
+    assert msg.metadata["proactive_followup_status"] == "resolved"
+    assert msg.metadata["resolved_from_proactive_message_id"] == "telegram:123:7"
+    assert msg.metadata["resolved_proactive_refs"][0]["id"] == "feed:p2"
+    assert "memory block" in ctx.retrieved_memory_block
+    assert "resolved_proactive_followup" in ctx.retrieved_memory_block
+    assert "Second Paper" in ctx.retrieved_memory_block
+
+
+@pytest.mark.asyncio
+async def test_before_turn_injects_reply_context_as_prompt_only_hint():
+    bus = EventBus()
+    session = _DummySession("feishu:chat-1")
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    bundle = ContextBundle(retrieved_memory_block="memory block")
+    ctx_store = SimpleNamespace(prepare=AsyncMock(return_value=bundle))
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = InboundMessage(
+        channel="feishu",
+        sender="user",
+        chat_id="chat-1",
+        content="这里再解释一下",
+        timestamp=_now,
+        metadata={
+            "reply_to_message_id": "card-msg-1",
+            "reply_to_sender": "Akashic",
+            "reply_to_msg_type": "interactive",
+            "reply_context_text": "这是上一条卡片里的最终回复",
+            "reply_context_hint": "【你正在回复一条历史消息】\n被回复消息（来自 Akashic）：\n这是上一条卡片里的最终回复",
+        },
+    )
+    state = TurnState(msg=msg, session_key="feishu:chat-1", dispatch_outbound=True)
+
+    ctx = await phase.run(state)
+
+    assert ctx.content == "这里再解释一下"
+    assert "memory block" in ctx.retrieved_memory_block
+    assert "reply_context" in ctx.retrieved_memory_block
+    assert "仅用于理解当前指代" in ctx.retrieved_memory_block
+    assert "这是上一条卡片里的最终回复" in ctx.retrieved_memory_block
+    assert ctx.extra_hints == []
+    assert ctx.extra_metadata["reply_to_message_id"] == "card-msg-1"
+    assert "reply_context_text" not in ctx.extra_metadata
+
+
+@pytest.mark.asyncio
 async def test_before_turn_chain_can_abort():
     bus = EventBus()
     session = _DummySession("telegram:123")
@@ -1226,6 +1323,17 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
 
     session = _DummySession("telegram:123")
     msg = _inbound()
+    msg.metadata.update(
+        {
+            "proactive_followup": True,
+            "proactive_followup_status": "resolved",
+            "resolved_from_proactive_message_id": "telegram:123:7",
+            "resolved_proactive_refs": [{"id": "feed:p2", "title": "Second Paper"}],
+            "reply_to_message_id": "card-msg-1",
+            "reply_context_text": "这是上一条卡片里的最终回复",
+            "reply_context_hint": "【你正在回复一条历史消息】\n被回复消息（来自 Akashic）：\n这是上一条卡片里的最终回复",
+        }
+    )
     state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
     state.session = session
     state.extra_metadata["before_turn_flag"] = "bt"
@@ -1239,7 +1347,10 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
         tools_used=[],
         thinking=None,
         streamed=False,
-        context_retry={},
+        context_retry={
+            "llm_user_content": "hello",
+            "llm_context_frame": '<system-reminder data-system-context-frame="true">这是上一条卡片里的最终回复</system-reminder>',
+        },
     )
     phase = Phase(
         default_after_reasoning_modules(
@@ -1252,10 +1363,23 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
 
     result = await phase.run(AfterReasoningInput(state=state, turn_result=turn_result))
 
+    assert session.messages[0]["content"] == "hello"
+    assert "这是上一条卡片里的最终回复" not in session.messages[0]["content"]
+    assert session.messages[0]["llm_user_content"] == "hello"
+    assert "llm_context_frame" not in session.messages[0]
     assert session.messages[0]["user_flag"] == "u"
+    assert session.messages[0]["proactive_followup"] is True
+    assert session.messages[0]["proactive_followup_status"] == "resolved"
+    assert session.messages[0]["resolved_from_proactive_message_id"] == "telegram:123:7"
+    assert session.messages[0]["resolved_proactive_refs"] == [
+        {"id": "feed:p2", "title": "Second Paper"}
+    ]
     assert session.messages[1]["assistant_flag"] == "a"
     assert result.outbound.metadata["before_turn_flag"] == "bt"
     assert result.outbound.metadata["plugin_flag"] == "m"
+    assert result.outbound.metadata["reply_to_message_id"] == "card-msg-1"
+    assert "reply_context_text" not in result.outbound.metadata
+    assert "reply_context_hint" not in result.outbound.metadata
     assert result.outbound.media == ["/tmp/a.png"]
 
 

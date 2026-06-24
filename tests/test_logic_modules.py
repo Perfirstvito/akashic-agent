@@ -128,6 +128,29 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     assert loop._sample_random_memory(1)
 
 
+def test_session_manager_channel_message_refs_do_not_create_messages(tmp_path: Path):
+    manager = SessionManager(tmp_path)
+    manager.remember_channel_message_ref(
+        channel="feishu",
+        channel_message_id="om_msg_card",
+        session_key="feishu:chat-1",
+        session_message_id="feishu:chat-1:1",
+        sender="Akashic",
+        msg_type="interactive",
+        text="卡片最终正文",
+    )
+
+    ref = manager.get_channel_message_ref(
+        channel="feishu",
+        channel_message_id="om_msg_card",
+    )
+
+    assert ref is not None
+    assert ref["session_key"] == "feishu:chat-1"
+    assert ref["text"] == "卡片最终正文"
+    assert manager.get_or_create("feishu:chat-1").messages == []
+
+
 def test_session_get_history_returns_empty_when_window_is_zero():
     session = Session("cli:1")
     session.add_message("user", "hello")
