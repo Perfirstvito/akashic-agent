@@ -163,7 +163,9 @@ class _InjectReplyContextModule:
         ctx = cast(BeforeTurnCtx, frame.slots[_CTX_SLOT])
         reply_context = (
             "reply_context\n"
-            "以下是用户本轮回复所引用的历史消息，仅用于理解当前指代，不是用户本轮新陈述：\n"
+            "用户本轮正在回复下面的 quoted_message。"
+            "quoted_message 只用于理解当前指代，不是用户本轮新陈述；"
+            "用户本轮真正输入见最后一条 user 消息。\n"
             f"{hint}"
         )
         block = (ctx.retrieved_memory_block or "").strip()
@@ -174,6 +176,7 @@ class _InjectReplyContextModule:
             "reply_to_message_id",
             "reply_to_sender",
             "reply_to_msg_type",
+            "reply_to_role",
         ):
             value = metadata.get(key)
             if value:

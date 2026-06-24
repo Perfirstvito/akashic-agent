@@ -1055,15 +1055,31 @@ class FeishuChannel:
         if not reply_text:
             return reply_meta
         sender_label = str(reply_data.get("sender") or "").strip() or "未知发送者"
+        author_role = self._reply_author_role(sender_label)
         reply_meta["reply_to_sender"] = sender_label
         reply_meta["reply_to_msg_type"] = str(reply_data.get("msg_type") or "")
+        reply_meta["reply_to_role"] = author_role
         reply_meta["reply_context_text"] = reply_text
         reply_meta["reply_context_hint"] = (
-            "【你正在回复一条历史消息】\n"
-            f"被回复消息（来自 {sender_label}）：\n"
-            f"{reply_text}"
+            "<quoted_message>\n"
+            f"author_role: {author_role}\n"
+            f"author_name: {sender_label}\n"
+            f"message_id: {reply_message_id}\n"
+            f"msg_type: {reply_meta['reply_to_msg_type']}\n"
+            "content:\n"
+            f"{reply_text}\n"
+            "</quoted_message>"
         ).strip()
         return reply_meta
+
+    @staticmethod
+    def _reply_author_role(sender_label: str) -> str:
+        normalized = str(sender_label or "").strip().lower()
+        if normalized in {"akashic", "bot", "assistant"}:
+            return "assistant"
+        if not normalized or normalized == "未知发送者":
+            return "unknown"
+        return "user"
 
     def _parse_post_content(self, content: dict[str, Any]) -> str:
         """解析飞书 post 类型的富文本内容"""

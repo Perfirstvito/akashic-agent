@@ -379,8 +379,18 @@ async def test_before_turn_injects_reply_context_as_prompt_only_hint():
             "reply_to_message_id": "card-msg-1",
             "reply_to_sender": "Akashic",
             "reply_to_msg_type": "interactive",
+            "reply_to_role": "assistant",
             "reply_context_text": "这是上一条卡片里的最终回复",
-            "reply_context_hint": "【你正在回复一条历史消息】\n被回复消息（来自 Akashic）：\n这是上一条卡片里的最终回复",
+            "reply_context_hint": (
+                "<quoted_message>\n"
+                "author_role: assistant\n"
+                "author_name: Akashic\n"
+                "message_id: card-msg-1\n"
+                "msg_type: interactive\n"
+                "content:\n"
+                "这是上一条卡片里的最终回复\n"
+                "</quoted_message>"
+            ),
         },
     )
     state = TurnState(msg=msg, session_key="feishu:chat-1", dispatch_outbound=True)
@@ -390,10 +400,13 @@ async def test_before_turn_injects_reply_context_as_prompt_only_hint():
     assert ctx.content == "这里再解释一下"
     assert "memory block" in ctx.retrieved_memory_block
     assert "reply_context" in ctx.retrieved_memory_block
-    assert "仅用于理解当前指代" in ctx.retrieved_memory_block
+    assert "quoted_message 只用于理解当前指代" in ctx.retrieved_memory_block
+    assert "<quoted_message>" in ctx.retrieved_memory_block
+    assert "author_role: assistant" in ctx.retrieved_memory_block
     assert "这是上一条卡片里的最终回复" in ctx.retrieved_memory_block
     assert ctx.extra_hints == []
     assert ctx.extra_metadata["reply_to_message_id"] == "card-msg-1"
+    assert ctx.extra_metadata["reply_to_role"] == "assistant"
     assert "reply_context_text" not in ctx.extra_metadata
 
 
@@ -1330,8 +1343,18 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
             "resolved_from_proactive_message_id": "telegram:123:7",
             "resolved_proactive_refs": [{"id": "feed:p2", "title": "Second Paper"}],
             "reply_to_message_id": "card-msg-1",
+            "reply_to_role": "assistant",
             "reply_context_text": "这是上一条卡片里的最终回复",
-            "reply_context_hint": "【你正在回复一条历史消息】\n被回复消息（来自 Akashic）：\n这是上一条卡片里的最终回复",
+            "reply_context_hint": (
+                "<quoted_message>\n"
+                "author_role: assistant\n"
+                "author_name: Akashic\n"
+                "message_id: card-msg-1\n"
+                "msg_type: interactive\n"
+                "content:\n"
+                "这是上一条卡片里的最终回复\n"
+                "</quoted_message>"
+            ),
         }
     )
     state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
@@ -1378,6 +1401,7 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
     assert result.outbound.metadata["before_turn_flag"] == "bt"
     assert result.outbound.metadata["plugin_flag"] == "m"
     assert result.outbound.metadata["reply_to_message_id"] == "card-msg-1"
+    assert result.outbound.metadata["reply_to_role"] == "assistant"
     assert "reply_context_text" not in result.outbound.metadata
     assert "reply_context_hint" not in result.outbound.metadata
     assert result.outbound.media == ["/tmp/a.png"]

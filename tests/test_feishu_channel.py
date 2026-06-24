@@ -159,8 +159,11 @@ async def test_feishu_reply_stores_cached_card_message_as_metadata(feishu_channe
     assert inbound.content == "这里再解释一下"
     assert inbound.metadata["reply_to_message_id"] == "card-msg-1"
     assert inbound.metadata["reply_to_msg_type"] == "interactive"
+    assert inbound.metadata["reply_to_role"] == "assistant"
     assert inbound.metadata["reply_context_text"] == "这是上一条卡片里的最终回复"
-    assert "被回复消息（来自 Akashic）" in inbound.metadata["reply_context_hint"]
+    assert "<quoted_message>" in inbound.metadata["reply_context_hint"]
+    assert "author_role: assistant" in inbound.metadata["reply_context_hint"]
+    assert "author_name: Akashic" in inbound.metadata["reply_context_hint"]
 
 
 @pytest.mark.asyncio
@@ -205,6 +208,7 @@ async def test_feishu_reply_uses_session_message_ref_without_short_cache(
     assert inbound.content == "继续这个"
     assert inbound.metadata["reply_context_text"] == "很久以前的卡片正文"
     assert inbound.metadata["reply_to_msg_type"] == "interactive"
+    assert inbound.metadata["reply_to_role"] == "assistant"
 
 
 def test_feishu_extracts_interactive_card_text(feishu_channel):
