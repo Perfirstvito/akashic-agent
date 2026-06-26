@@ -13,10 +13,14 @@ _PROMPT_CTX_SLOT = FrameSlot.PROMPT_CTX
 _REASONING_CTX_SLOT = FrameSlot.REASONING_CTX
 _PERSIST_CITED_SLOT = FrameSlot.PERSIST_ASSISTANT_CITED_MEMORY_IDS
 _TRAILING_PROTOCOL_TAG = r"<[a-zA-Z][a-zA-Z0-9_-]*:[^<>\s]+>"
+_CITATION_PREFIX = r"(?:引用|引用来源|引用记忆|references?|citation|cited)"
 _CITED_RE = re.compile(
-    rf"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_,\-\s]*)\]§(?P<trailing>(?:\s*{_TRAILING_PROTOCOL_TAG}\s*)*)$",
+    rf"(?:(?:^|[\r\n])\s*(?:{_CITATION_PREFIX}\s*[:：]?\s*)?)?"
+    rf"§\s*cited\s*[:：]\s*\[(?P<raw>[^\]\r\n]*)\]\s*§?"
+    rf"\s*[。.!！?？;；,，、]?\s*(?P<trailing>(?:\s*{_TRAILING_PROTOCOL_TAG}\s*)*)$",
     re.IGNORECASE,
 )
+_CITED_ID_RE = re.compile(r"[A-Za-z0-9_.:-]+")
 _TRAILING_PROTOCOL_TAGS_RE = re.compile(
     rf"(?:\s*{_TRAILING_PROTOCOL_TAG}\s*)+$",
     re.IGNORECASE,
@@ -86,7 +90,9 @@ class ProtocolTagCleanupModule:
         if ctx is None:
             return frame
         reply = str(getattr(ctx, "reply", "") or "")
-        cleaned = strip_inline_memory_refs(strip_trailing_protocol_tags(reply))
+        cleaned = strip_inline_memory_refs(
+            strip_trailing_protocol_tags(strip_trailing_citation_protocol(reply))
+        )
         if cleaned != reply:
             ctx.reply = cleaned
         return frame
@@ -106,13 +112,29 @@ def extract_cited_ids(response: str) -> tuple[str, list[str]]:
     match = _CITED_RE.search(response)
     if not match:
         return response, []
-    raw = match.group(1)
-    ids = [item.strip() for item in raw.split(",") if item.strip()]
+    raw = match.group("raw")
+    ids = [
+        item
+        for item in (part.strip() for part in re.split(r"[,，]", raw))
+        if item and _CITED_ID_RE.fullmatch(item)
+    ]
+    clean = _strip_cited_match(response, match)
+    return clean, ids
+
+
+def strip_trailing_citation_protocol(response: str) -> str:
+    match = _CITED_RE.search(response)
+    if not match:
+        return response
+    return _strip_cited_match(response, match)
+
+
+def _strip_cited_match(response: str, match: re.Match[str]) -> str:
     trailing = match.group("trailing").strip()
     clean = response[: match.start()].rstrip()
     if trailing:
         clean = f"{clean} {trailing}".strip()
-    return clean, ids
+    return clean
 
 
 def strip_trailing_protocol_tags(response: str) -> str:

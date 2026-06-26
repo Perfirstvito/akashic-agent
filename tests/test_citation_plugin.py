@@ -31,6 +31,7 @@ CitationPlugin = _citation_module.CitationPlugin
 ProtocolTagCleanupModule = _citation_module.ProtocolTagCleanupModule
 extract_cited_ids = _citation_module.extract_cited_ids
 extract_cited_ids_from_tool_chain = _citation_module.extract_cited_ids_from_tool_chain
+strip_trailing_citation_protocol = _citation_module.strip_trailing_citation_protocol
 strip_trailing_protocol_tags = _citation_module.strip_trailing_protocol_tags
 strip_inline_memory_refs = _citation_module.strip_inline_memory_refs
 
@@ -47,6 +48,27 @@ def test_citation_extracts_marker_with_spaces_after_commas() -> None:
 
     assert clean == "答复正文"
     assert ids == ["mem_1", "mem-2"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_ids"),
+    [
+        ("答复正文\n§cited: [mem_1]§", ["mem_1"]),
+        ("答复正文\n§cited：[mem_1]§", ["mem_1"]),
+        ("答复正文\n§ cited: [mem_1] §", ["mem_1"]),
+        ("答复正文\n§cited:[mem_1]", ["mem_1"]),
+        ("答复正文\n引用：§cited:[mem_1]§", ["mem_1"]),
+        ("答复正文\n§cited:[mem_1]§。", ["mem_1"]),
+        ("答复正文\n§cited:[mem_1]§\n", ["mem_1"]),
+    ],
+)
+def test_citation_extracts_common_trailing_marker_variants(
+    text: str, expected_ids: list[str]
+) -> None:
+    clean, ids = extract_cited_ids(text)
+
+    assert clean == "答复正文"
+    assert ids == expected_ids
 
 
 def test_citation_strips_empty_marker() -> None:
@@ -97,6 +119,12 @@ def test_citation_rejects_malformed_trailing_protocol_tag() -> None:
 
     assert clean == text
     assert ids == []
+
+
+def test_citation_strips_trailing_protocol_without_valid_ids() -> None:
+    clean = strip_trailing_citation_protocol("答复正文\n§cited:[mem_1, 备注]§")
+
+    assert clean == "答复正文"
 
 
 def test_citation_strips_leftover_trailing_protocol_tags() -> None:
@@ -246,6 +274,28 @@ async def test_citation_cleanup_module_strips_leftover_protocol_tags() -> None:
         tool_chain=(),
         context_retry={},
         reply="答复正文 <memem:clever>",
+    )
+    frame = SimpleNamespace(slots={"reasoning:ctx": ctx})
+
+    await module.run(frame)
+
+    assert ctx.reply == "答复正文"
+
+
+@pytest.mark.asyncio
+async def test_citation_cleanup_module_strips_leftover_citation_protocol() -> None:
+    module = ProtocolTagCleanupModule()
+    ctx = AfterReasoningCtx(
+        session_key="telegram:1",
+        channel="telegram",
+        chat_id="1",
+        tools_used=(),
+        thinking=None,
+        response_metadata=ResponseMetadata(raw_text="答复正文\n§ cited: [mem_1]"),
+        streamed=False,
+        tool_chain=(),
+        context_retry={},
+        reply="答复正文\n§ cited: [mem_1]",
     )
     frame = SimpleNamespace(slots={"reasoning:ctx": ctx})
 
