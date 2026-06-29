@@ -19,7 +19,6 @@ def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
     proactive_cfg.default_chat_id = "1"
     cfg = SimpleNamespace(
         proactive=proactive_cfg,
-        fitbit=SimpleNamespace(enabled=False),
         memory_optimizer_enabled=False,
         memory_optimizer_interval_seconds=3600,
         model="m",
@@ -110,7 +109,7 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
         ),
     )
 
-    runtime_context = tick._build_runtime_context_message(
+    runtime_context = tick._prompt_builder.build_runtime_context_message(
         AgentTickContext(session_key="test"),
         GatewayResult(),
     )

@@ -11,6 +11,58 @@ MAX_METRICS_VALUE_STR_LEN = 60
 _TIME_KEY_SUFFIXES = ("_at", "_time", "_ts")
 _TIME_KEYS = {"last_seen", "updated_at", "published_at", "timestamp", "ts"}
 
+# ── source key 契约 ────────────────────────────────────────────────────────
+#
+# proactive 链路用两种命名空间 key 标识一条候选内容，二者形状不同、不可混用：
+#
+# 1. compound_key = "{ack_server}:{event_id}"
+#    贯穿 gateway → tools 校验 → delivery 去重 → ack 回执，并硬编码在 system
+#    prompt（evidence 格式）与工具 schema description 中供 LLM 产出。格式不可变。
+#
+# 2. source_key = "mcp:{ack_server}"
+#    落盘于 proactive.db 的 seen_items / rejection_cooldown / semantic_items 三表
+#    source_key 列，是持久化契约。格式不可变，否则现有去重状态失效。
+MCP_SOURCE_PREFIX = "mcp:"
+
+
+def build_compound_key(ack_server: str, event_id: str) -> str:
+    """构造 compound_key "{ack_server}:{event_id}"，幂等。
+
+    若 event_id 已含 ':' 且其前缀等于 ack_server，则不再重复加前缀，
+    避免 "feed:feed:x" 这类双前缀。event_id 为空时返回空串。
+    """
+    raw_id = str(event_id or "").strip()
+    ack_server = str(ack_server or "").strip()
+    if not raw_id:
+        return ""
+    if ":" in raw_id:
+        prefix = raw_id.partition(":")[0]
+        if not ack_server or prefix == ack_server:
+            return raw_id
+    if ack_server:
+        return f"{ack_server}:{raw_id}"
+    return raw_id
+
+
+def build_source_key(ack_server: str) -> str:
+    """构造去重库 source_key "mcp:{ack_server}"。"""
+    return f"{MCP_SOURCE_PREFIX}{str(ack_server or '').strip()}"
+
+
+def normalize_source_key(source_key: str) -> str:
+    """归一 source_key：剥离 item_id 部分，只保留 "mcp:{ack_server}"。
+
+    "mcp:feed-mcp:c1" → "mcp:feed-mcp"；"mcp:feed-mcp" → "mcp:feed-mcp"；
+    非 "mcp:" 前缀的值原样返回（向后兼容历史数据）。
+    """
+    raw = str(source_key or "").strip()
+    if not raw.startswith(MCP_SOURCE_PREFIX):
+        return raw
+    parts = raw.split(":", 2)
+    if len(parts) < 2:
+        return raw
+    return ":".join(parts[:2])
+
 
 def _trim_text(text: str, limit: int) -> str:
     if len(text) <= limit:
@@ -123,7 +175,7 @@ def normalize_alert(event: dict[str, Any]) -> AlertContract:
     severity = str(event.get("severity") or "").strip()
     tone = str(event.get("suggested_tone") or "").strip()
     return AlertContract(
-        item_id=f"{ack_server}:{event_id}",
+        item_id=build_compound_key(ack_server, event_id),
         title=title,
         content=content,
         severity=severity,

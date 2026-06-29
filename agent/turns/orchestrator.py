@@ -5,7 +5,12 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from agent.turns.outbound import OutboundDispatch, OutboundPort
+from agent.turns.outbound import (
+    PROACTIVE_OUTBOUND_SOURCE,
+    PROACTIVE_SOURCE_KEY,
+    OutboundDispatch,
+    OutboundPort,
+)
 from agent.turns.result import TurnResult
 
 if TYPE_CHECKING:
@@ -54,7 +59,7 @@ class TurnOrchestrator:
                     channel=channel,
                     chat_id=chat_id,
                     content=content,
-                    metadata={"source": result.trace.source if result.trace else "proactive"},
+                    metadata={PROACTIVE_SOURCE_KEY: PROACTIVE_OUTBOUND_SOURCE},
                     media=media,
                 )
             )

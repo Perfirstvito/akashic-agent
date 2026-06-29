@@ -74,11 +74,6 @@ class MemoryConfig:
 
 
 @dataclass
-class FitbitIntegrationConfig:
-    enabled: bool = False
-
-
-@dataclass
 class PeerAgentConfig:
     name: str
     base_url: str
@@ -126,7 +121,6 @@ class Config:
     agent_api_key: str = ""
     agent_base_url: str = ""
     memory: MemoryConfig = field(default_factory=MemoryConfig)
-    fitbit: FitbitIntegrationConfig = field(default_factory=FitbitIntegrationConfig)
     multimodal: bool = True
     vl_model: str = ""
     vl_api_key: str = ""
@@ -148,7 +142,6 @@ __all__ = [
     "ChannelsConfig",
     "Config",
     "FeishuChannelConfig",
-    "FitbitIntegrationConfig",
     "MemoryConfig",
     "MemoryEmbeddingConfig",
     "PeerAgentConfig",

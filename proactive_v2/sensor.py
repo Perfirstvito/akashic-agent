@@ -37,7 +37,7 @@ class Sensor:
         memory: "MemoryProfileApi | None",
         presence: PresenceStore | None,
         rng: Any,
-        fitbit: Any | None = None,
+        sleep_provider: Any | None = None,
     ) -> None:
         self._cfg = cfg
         self._sessions = sessions
@@ -45,23 +45,12 @@ class Sensor:
         self._memory = memory
         self._presence = presence
         self._rng = rng
-        self._fitbit = fitbit
+        self._sleep_provider = sleep_provider
 
     def sleep_context(self) -> Any:
-        if self._fitbit is None:
+        if self._sleep_provider is None:
             return None
-        return self._fitbit.get()
-
-    def refresh_sleep_context(self) -> bool:
-        if self._fitbit is None:
-            return False
-        refresh = getattr(self._fitbit, "refresh_now", None)
-        if not callable(refresh):
-            return False
-        try:
-            return bool(refresh())
-        except Exception:
-            return False
+        return self._sleep_provider.get()
 
     def target_session_key(self) -> str:
         channel = (self._cfg.default_channel or "").strip()

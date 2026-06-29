@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 from core.memory.engine import MemoryQuery
 from agent.prompting import is_context_frame
 from proactive_v2.context import AgentTickContext
+from proactive_v2.contracts import build_compound_key
 from proactive_v2.outbound_text import normalize_outbound_text
 
 if TYPE_CHECKING:
@@ -242,7 +243,7 @@ def _valid_content_ids(ctx: AgentTickContext) -> set[str]:
         return set(ctx.content_store.keys())
     # content_store 为空时退回 fetched_contents 元数据（fetch 失败但 meta 存在的情况）
     return {
-        f"{e['ack_server']}:{e['event_id']}"
+        build_compound_key(e["ack_server"], e["event_id"])
         for e in ctx.fetched_contents
         if e.get("ack_server") and e.get("event_id")
     }
@@ -364,7 +365,7 @@ def _mark_not_interesting(ctx: AgentTickContext, args: dict) -> str:
 
 def _valid_evidence_ids(ctx: AgentTickContext) -> set[str]:
     alert_ids = {
-        f"{e['ack_server']}:{e.get('event_id') or e.get('id', '')}"
+        build_compound_key(e["ack_server"], e.get("event_id") or e.get("id", ""))
         for e in ctx.fetched_alerts
         if e.get("ack_server") and (e.get("event_id") or e.get("id"))
     }

@@ -6,6 +6,12 @@ from typing import Any, Protocol
 
 from bus.events import OutboundMessage
 
+# 主动出站元数据中的来源标记契约。
+# TurnOrchestrator 写入、feishu_channel 读取；任意一侧拼写漂移都会让主动推送
+# 被误判为被动 turn，进而被卡片流式抑制逻辑吞掉。
+PROACTIVE_SOURCE_KEY = "source"
+PROACTIVE_OUTBOUND_SOURCE = "proactive"
+
 
 @dataclass
 class OutboundDispatch:

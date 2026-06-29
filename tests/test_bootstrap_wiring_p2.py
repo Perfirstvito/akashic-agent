@@ -369,34 +369,6 @@ def test_config_load_skips_unfilled_channels(tmp_path: Path, monkeypatch: pytest
     assert cfg.channels.socket == DEFAULT_SOCKET
 
 
-def test_config_load_reads_fitbit_integration_block(tmp_path: Path):
-    cfg_path = tmp_path / "config.toml"
-    _write_toml(
-        cfg_path,
-        {
-            "llm": {
-                "provider": "openai",
-                "main": {
-                    "model": "m",
-                    "api_key": "k",
-                },
-            },
-            "agent": {
-                "system_prompt": "s",
-            },
-            "integrations": {
-                "fitbit": {
-                    "enabled": True,
-                }
-            },
-        },
-    )
-
-    cfg = Config.load(cfg_path)
-
-    assert cfg.fitbit.enabled is True
-
-
 def test_config_load_reads_toml_layout(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
@@ -417,9 +389,6 @@ memory_window = 12
 
 [channels]
 socket = "/tmp/toml-akashic.sock"
-
-[integrations.fitbit]
-enabled = true
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -436,7 +405,6 @@ enabled = true
         assert cfg.channels.socket.startswith("127.0.0.1:")
     else:
         assert cfg.channels.socket == "/tmp/toml-akashic.sock"
-    assert cfg.fitbit.enabled is True
 
 
 def test_config_load_reads_qq_websocket_timeout(tmp_path: Path):

@@ -797,9 +797,6 @@ def _render_proactive(a: WizardAnswers) -> str:
 
 def _render_integrations() -> str:
     return """\
-[integrations.fitbit]
-enabled = false
-
 # 可选：接入外部 Peer Agent（如 DeepResearch）
 # [[integrations.peer_agents]]
 # name = "DeepResearch Agent"

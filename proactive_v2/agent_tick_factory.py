@@ -16,6 +16,7 @@ from agent.tools.web_fetch import WebFetchTool
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from agent.turns.orchestrator import TurnOrchestrator
 from proactive_v2 import mcp_sources
+from proactive_v2.contracts import build_source_key
 from proactive_v2.mcp_sources import McpClientPool
 from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
 from agent.core.drift_turn import DriftTurnPipeline, DriftTurnPipelineDeps
@@ -180,8 +181,8 @@ class AgentTickFactory:
             except Exception:
                 sleep_ctx = None
             if sleep_ctx is not None:
-                fitbit_context = {
-                    "_source": "fitbit_sleep",
+                sleep_context_row = {
+                    "_source": "sleep_context",
                     "available": bool(getattr(sleep_ctx, "available", False)),
                     "sleep_state": str(getattr(sleep_ctx, "state", "unknown")),
                     "sleep_prob": getattr(sleep_ctx, "prob", None),
@@ -189,9 +190,8 @@ class AgentTickFactory:
                         getattr(sleep_ctx, "prob_source", "unavailable")
                     ),
                     "data_lag_min": getattr(sleep_ctx, "data_lag_min", None),
-                    "sleep_24h": getattr(sleep_ctx, "sleep_24h", {}) or {},
                 }
-                rows.insert(0, fitbit_context)
+                rows.insert(0, sleep_context_row)
             return rows
 
         return context_fn
@@ -217,7 +217,7 @@ class AgentTickFactory:
             if len(parts) != 2:
                 return
             ack_server, item_id = parts
-            source_key = f"mcp:{ack_server}"
+            source_key = build_source_key(ack_server)
             await mcp_sources.acknowledge_content_entries_async(
                 pool, [(source_key, item_id)], ttl_hours=ttl_hours
             )

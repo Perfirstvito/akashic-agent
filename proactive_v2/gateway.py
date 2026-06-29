@@ -12,6 +12,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from proactive_v2.contracts import build_compound_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -115,7 +117,7 @@ class DataGateway:
         for event, result in zip(events, fetch_results):
             item_id = event.get("event_id") or event.get("id") or ""
             ack_server = event.get("ack_server", "")
-            compound_key = f"{ack_server}:{item_id}"
+            compound_key = build_compound_key(ack_server, item_id)
 
             meta = {
                 "id": compound_key,

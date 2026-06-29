@@ -884,7 +884,6 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         proactive=SimpleNamespace(
             enabled=False,
         ),
-        fitbit=SimpleNamespace(enabled=False),
         memory_optimizer_enabled=False,
         memory_optimizer_interval_seconds=3600,
         model="m",
@@ -933,7 +932,6 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         proactive=SimpleNamespace(
             enabled=True,
         ),
-        fitbit=SimpleNamespace(enabled=True),
         memory_optimizer_enabled=True,
         memory_optimizer_interval_seconds=7200,
         model="m",

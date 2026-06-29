@@ -15,6 +15,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from proactive_v2.contracts import MCP_SOURCE_PREFIX
+
 if TYPE_CHECKING:
     from proactive_v2.event import AlertEvent
 
@@ -372,7 +374,7 @@ async def acknowledge_content_entries_async(
         return
     ack_map = _build_ack_map(_load_sources(pool._workspace))
     for source_key, item_id in entries:
-        if not source_key.startswith("mcp:"):
+        if not source_key.startswith(MCP_SOURCE_PREFIX):
             continue
         parts = source_key.split(":", 2)
         server = parts[1] if len(parts) >= 2 else ""

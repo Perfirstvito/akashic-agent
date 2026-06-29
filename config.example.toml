@@ -146,9 +146,6 @@ min_interval_hours = 3
 # 其他集成（可选）
 # =============================================================================
 
-[integrations.fitbit]
-enabled = false
-
 # 可选：接入外部 Peer Agent（如 DeepResearch）
 # [[integrations.peer_agents]]
 # name = "DeepResearch Agent"

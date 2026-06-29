@@ -43,6 +43,7 @@ from bus.events import InboundMessage, OutboundMessage
 from bus.events_lifecycle import StreamDeltaReady, ToolCallCompleted, ToolCallStarted, TurnCommitted, TurnStarted
 from bus.queue import MessageBus
 from agent.looping.interrupt import InterruptController
+from agent.turns.outbound import PROACTIVE_OUTBOUND_SOURCE, PROACTIVE_SOURCE_KEY
 
 # protobuf 帧解析（飞书使用 PBBP2 二进制协议）
 try:
@@ -1175,7 +1176,7 @@ class FeishuChannel:
 
     def _is_passive_turn_outbound(self, msg: OutboundMessage) -> bool:
         metadata = msg.metadata or {}
-        if metadata.get("source") == "proactive":
+        if metadata.get(PROACTIVE_SOURCE_KEY) == PROACTIVE_OUTBOUND_SOURCE:
             return False
         return any(
             key in metadata

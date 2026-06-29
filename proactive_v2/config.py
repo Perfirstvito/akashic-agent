@@ -18,7 +18,10 @@ class ProactiveConfig:
     # Feed Poller 配置
     feed_poller_interval_seconds: int = 150
 
-    # === 以下参数由预设 + 覆盖控制 ===
+    # === 以下参数由 config_loader 的预设 + 覆盖控制 ===
+    #
+    # 这里保留字面量默认值，作为无 [proactive] 配置时的稳定 fallback。
+    # 不在 dataclass import 阶段读取 presets，避免基础配置模型依赖策略表结构。
 
     # Trigger 配置
     tick_interval_s0: int = 4800
@@ -51,7 +54,7 @@ class ProactiveConfig:
     context_only_judge_threshold: float = 0.72
     context_only_judge_threshold_with_evidence: float = 0.68
 
-    # === 策略内置参数（不对外暴露，由 presets.STRATEGY_PARAMS 提供） ===
+    # === 策略内置参数（不对外暴露，配置加载时由 presets.STRATEGY_PARAMS 覆盖） ===
 
     # 评分权重
     score_weight_energy: float = 0.40

@@ -80,9 +80,7 @@ class ProactiveLoop:
         processing_acquire: Callable[[str], AsyncContextManager[None]] | None = None,
         outbound_bus: Any | None = None,
         shared_tools: ToolRegistry | None = None,
-        fitbit_enabled: bool = False,
-        fitbit_url: str = "http://127.0.0.1:18765",
-        fitbit_poll_interval: int = 300,
+        sleep_provider: Any | None = None,
         tool_hooks: list[ToolHook] | None = None,
     ) -> None:
         self._sessions = session_manager
@@ -102,9 +100,7 @@ class ProactiveLoop:
         self._outbound_bus = outbound_bus
         self._shared_tools = shared_tools
         self._tool_hooks = tool_hooks or []
-        self._fitbit_enabled = bool(fitbit_enabled)
-        self._fitbit_url = str(fitbit_url or "http://127.0.0.1:18765")
-        self._fitbit_poll_interval = max(1, int(fitbit_poll_interval))
+        self._sleep_provider = sleep_provider
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
         self._init_runtime_state(config)
@@ -125,17 +121,6 @@ class ProactiveLoop:
         if state_store is not None:
             return state_store
         return ProactiveStateStore(state_path or Path("proactive.db"))
-
-    def _build_fitbit_provider(self):
-        if not self._fitbit_enabled:
-            return None
-        from proactive_v2.fitbit_sleep import FitbitSleepProvider
-
-        return FitbitSleepProvider(
-            url=self._fitbit_url,
-            poll_interval=self._fitbit_poll_interval,
-            sleeping_modifier=self._cfg.sleep_modifier_sleeping,
-        )
 
     def _build_turn_orchestrator(self) -> TurnOrchestrator:
         outbound = (
@@ -161,7 +146,7 @@ class ProactiveLoop:
             rng=self._rng,
         )
 
-    def _build_sense(self, fitbit_provider) -> Sensor:
+    def _build_sense(self, sleep_provider) -> Sensor:
         return Sensor(
             cfg=self._cfg,
             sessions=self._sessions,
@@ -169,7 +154,7 @@ class ProactiveLoop:
             memory=cast("MemoryProfileApi | None", self._memory),
             presence=self._presence,
             rng=self._rng,
-            fitbit=fitbit_provider,
+            sleep_provider=sleep_provider,
         )
 
     def _build_agent_tick(self):
@@ -218,7 +203,7 @@ class ProactiveLoop:
         # 3. 构建发送编排器、前置 gate、传感器、去重器和主动链路 pipeline。
         self._turn_orchestrator = self._build_turn_orchestrator()
         self._anyaction = self._build_anyaction_gate()
-        self._sense = self._build_sense(self._build_fitbit_provider())
+        self._sense = self._build_sense(self._sleep_provider)
         self._message_deduper = self._build_message_deduper()
         self._proactive_pipeline = self._build_agent_tick()
         # 4. 启动时把当前 proactive 配置落一份 trace，方便回看。

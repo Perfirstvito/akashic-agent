@@ -21,7 +21,6 @@ from agent.config_models import (
     ChannelsConfig,
     Config,
     FeishuChannelConfig,
-    FitbitIntegrationConfig,
     MemoryConfig,
     MemoryEmbeddingConfig,
     PeerAgentConfig,
@@ -92,7 +91,6 @@ def load_config(path: str | Path = "config.toml") -> Config:
     proactive = _load_proactive_config(data)
     memory = _load_memory_config(data)
     peer_agents = _load_peer_agents_config(data)
-    fitbit = _load_fitbit_config(data)
     wiring = _load_wiring_config(data)
 
     return Config(
@@ -141,7 +139,6 @@ def load_config(path: str | Path = "config.toml") -> Config:
             llm_agent.get("base_url") or data.get("agent_base_url", "")
         ),
         memory=memory,
-        fitbit=fitbit,
         tool_search_enabled=bool(
             agent_tools.get("search_enabled", data.get("tool_search_enabled", False))
         ),
@@ -317,14 +314,6 @@ def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
         )
         for pa in peer_agents
     ]
-
-
-def _load_fitbit_config(data: dict) -> FitbitIntegrationConfig:
-    integrations = _as_dict(data.get("integrations"))
-    fitbit = _as_dict(integrations.get("fitbit"))
-    return FitbitIntegrationConfig(
-        enabled=bool(fitbit.get("enabled", False)),
-    )
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:

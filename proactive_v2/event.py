@@ -101,7 +101,7 @@ class AlertEvent(ProactiveEvent, ABC):
     def _extra_signal_fields(self) -> dict[str, Any]:
         return {
             "severity": self.severity,
-            # "message" 保持向后兼容：components.py 和 prompts/proactive.py 读的是这个键
+            # "message" 保持向后兼容：components.py 读的是这个键
             "message": self.content,
         }
 

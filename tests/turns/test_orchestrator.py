@@ -8,7 +8,7 @@ import pytest
 
 from agent.looping.ports import SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
-from agent.turns.outbound import OutboundDispatch
+from agent.turns.outbound import PROACTIVE_OUTBOUND_SOURCE, PROACTIVE_SOURCE_KEY, OutboundDispatch
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 
 
@@ -85,7 +85,7 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
         async def dispatch(self, outbound: OutboundDispatch) -> bool:
             order.append("dispatch")
             assert outbound.content == "hello"
-            assert outbound.metadata == {"source": "proactive"}
+            assert outbound.metadata == {PROACTIVE_SOURCE_KEY: PROACTIVE_OUTBOUND_SOURCE}
             return True
 
     presence = SimpleNamespace(record_proactive_sent=lambda _key: order.append("presence"))

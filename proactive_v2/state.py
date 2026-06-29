@@ -9,18 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from core.common.timekit import parse_iso as _parse_iso, utcnow as _utcnow
+from proactive_v2.contracts import normalize_source_key
 
 logger = logging.getLogger(__name__)
 
 
 def _dedupe_source_key(source_key: str) -> str:
-    raw = str(source_key or "").strip()
-    if not raw.startswith("mcp:"):
-        return raw
-    parts = raw.split(":", 2)
-    if len(parts) < 2:
-        return raw
-    return ":".join(parts[:2])
+    return normalize_source_key(source_key)
 
 
 class ProactiveStateStore:
